@@ -49,6 +49,7 @@
 | JVM ターゲット | Java 17 |
 | Compose BOM | 2024.10.00 |
 | スプラッシュ | androidx.core:core-splashscreen:1.0.1 |
+| マテリアルアイコン | androidx.compose.material:material-icons-core（BOM 管理）|
 
 ---
 
@@ -95,6 +96,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -397,6 +399,34 @@ onDragStart = { offset ->
 }
 ```
 
+### Bug 9: 新規インストールアプリが page 0 ではなく最終ページに表示される
+
+**症状**: アプリをインストールした後、再読み込みすると最終ページの末尾に現れる。
+
+**原因**: 保存データがある場合の新規アプリ追加先が `created.lastOrNull()` になっていた。
+
+**修正**:
+```kotlin
+// 修正前
+.let { created.lastOrNull()?.apps?.addAll(it) }
+
+// 修正後
+.let { created.firstOrNull()?.apps?.addAll(it) }
+```
+
+### Bug 10: アンインストール済みアプリのアイコンが残り続ける
+
+**症状**: アプリをアンインストールしても、そのアイコンが各ページに残り続ける。
+
+**原因**: SharedPreferences に保存された packageName のリストを復元する際、
+PackageManager にもはや存在しない packageName でも `allAppsMap[pkg]` が `null` を返すだけで
+特にエラーにならない。表示からは消えるが、アプリを再起動するまで反映されない。
+
+**修正**: タイトル行右端にリロードボタン（`Icons.Default.Refresh`）を追加。
+押下で `loadKey++` → `LaunchedEffect(loadKey)` が再実行され、
+PackageManager から最新のアプリ一覧を取得し直す。
+アンインストール済みアプリは `allAppsMap` に存在しないため自動的に除外される。
+
 ---
 
 ## 7. 追加・改修した機能
@@ -575,24 +605,57 @@ AlertDialog(
 )
 ```
 
-### 7-8. アプリタイトル表示
+### 7-8. アプリタイトル表示 ＋ リロードボタン
 
-トップバー最上段にアプリ名を表示。
+トップバー最上段にアプリ名とリロードボタンを表示。
 
 ```
-あめらん  - Amaging Launcher -
+あめらん  - Amaging Launcher -          [↺]
 ```
 
 - 「あめらん」: 24sp・Bold・文字間隔 2sp（主役）
 - 「- Amaging Launcher -」: 11sp・65%白・下端揃え
+- `[↺]`: 右端に 36dp 円形アイコンボタン（`Icons.Default.Refresh`）
 
-実装:
+**レイアウト**: `Arrangement.SpaceBetween` で左グループ（タイトル）と右アイコンを両端配置。
+
 ```kotlin
-Row(verticalAlignment = Alignment.Bottom) {
-    Text("あめらん", fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-    Spacer(Modifier.width(10.dp))
-    Text("- Amaging Launcher -", fontSize = 11.sp, color = Color.White.copy(alpha = 0.65f))
+Row(
+    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, ...),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+) {
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text("あめらん", fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+        Spacer(Modifier.width(10.dp))
+        Text("- Amaging Launcher -", fontSize = 11.sp, color = Color.White.copy(alpha = 0.65f))
+    }
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .background(Color.White.copy(alpha = 0.15f), CircleShape)
+            .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
+            .clickable { loadKey++ },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(Icons.Default.Refresh, contentDescription = "リロード", tint = Color.White, modifier = Modifier.size(20.dp))
+    }
 }
+```
+
+**リロード動作**: `loadKey++` → `LaunchedEffect(loadKey)` が再実行され PackageManager から
+最新のアプリ一覧を取得。アンインストール済みアプリは自動除外。新規インストールアプリは page 0 末尾に追加。
+
+**追加 import**:
+```kotlin
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Icon
+```
+
+**追加 dependency** (`build.gradle.kts`):
+```kotlin
+implementation("androidx.compose.material:material-icons-core")
 ```
 
 ### 7-9. アプリ名の変更
@@ -637,7 +700,7 @@ IO スレッドで実行
   └─ SharedPreferences からページデータ読み込み
   ↓
 保存データなし → 全アプリをアルファベット順に 1 ページ目へ
-保存データあり → 順序復元 + 新規インストールアプリを最終ページ末尾に追加
+保存データあり → 順序復元 + 新規インストールアプリを先頭ページ（page 0）末尾に追加
 ```
 
 ---
@@ -680,7 +743,7 @@ Box（画面全体・ドラッグジェスチャー担当）
 │
 ├─ Box（トップバー・Alignment.TopCenter）
 │   └─ Column
-│       ├─ Row（タイトル行）   ← "あめらん - Amaging Launcher -"
+│       ├─ Row（タイトル行）   ← 左: "あめらん - Amaging Launcher -" / 右: ↺ リロードボタン
 │       ├─ Spacer(5dp)
 │       ├─ Row（アクション行） ← リセット / タブを掴む / ◀ / ▶ / 完了 / 🎨
 │       ├─ Spacer(5dp)
@@ -782,4 +845,4 @@ done
 
 ---
 
-*最終更新: 2026-03-27*
+*最終更新: 2026-03-27（Bug 9・10 追記、7-8 リロードボタン追加、依存関係更新）*
