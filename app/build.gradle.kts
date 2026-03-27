@@ -63,6 +63,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     // --------------------------------------
 
+    // スプラッシュ画面（API 24〜30 でも同じ見た目にするための互換ライブラリ）
+    implementation("androidx.core:core-splashscreen:1.0.1")
+
     implementation(libs.material)
 
     testImplementation(libs.junit)

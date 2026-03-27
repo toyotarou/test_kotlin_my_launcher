@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
@@ -13,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,11 +31,17 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -42,14 +50,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
@@ -58,101 +70,109 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.core.content.edit
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
-import androidx.core.content.edit
 
-// ────────────────────────────────────────────────────────────────────────
-// SharedPreferences ヘルパー
-//   Flutter の SharedPreferences に相当。
-//   アプリの並び順をカンマ区切り文字列で保存する。
-//   削除したアプリは保存リストに含まれないので次回起動時も非表示になる。
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// SharedPreferences helpers
+// ─────────────────────────────────────────────────────────────────────────
 private const val PREFS_NAME = "launcher_prefs"
-private const val KEY_APP_ORDER = "app_order"
+private const val KEY_PAGE_COUNT = "page_count"
+private const val KEY_PAGE_NAME = "page_name_"  // + index
+private const val KEY_PAGE_APPS = "page_apps_"  // + index
 
-/** 保存済み並び順を読み込む（packageName のリスト） */
-fun loadSavedOrder(context: Context): List<String> {
-    val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .getString(KEY_APP_ORDER, null)
-    return if (raw.isNullOrEmpty()) emptyList()
-    else raw.split(",").filter { it.isNotBlank() }
+private data class SavedPageData(val name: String, val appOrder: List<String>)
+
+private fun loadSavedPages(context: Context): List<SavedPageData> {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val count = prefs.getInt(KEY_PAGE_COUNT, 0)
+    if (count == 0) return emptyList()
+    return (0 until count).map { i ->
+        val name = prefs.getString("$KEY_PAGE_NAME$i", "ページ ${i + 1}") ?: "ページ ${i + 1}"
+        val raw = prefs.getString("$KEY_PAGE_APPS$i", "") ?: ""
+        val apps = if (raw.isEmpty()) emptyList() else raw.split(",").filter { it.isNotBlank() }
+        SavedPageData(name, apps)
+    }
 }
 
-/** 現在の並び順を保存する */
-fun saveAppOrder(context: Context, packages: List<String>) {
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .edit {
-            putString(KEY_APP_ORDER, packages.joinToString(","))
-        }   // apply() は非同期書き込み（UI スレッドをブロックしない）
-}
-
-/** 保存データをすべて消去する（リセット用） */
-fun clearAppOrder(context: Context) {
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .edit {
-            remove(KEY_APP_ORDER)
+private fun saveAllPages(context: Context, pages: List<PageData>) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+        putInt(KEY_PAGE_COUNT, pages.size)
+        pages.forEachIndexed { i, page ->
+            putString("$KEY_PAGE_NAME$i", page.name)
+            putString("$KEY_PAGE_APPS$i", page.apps.joinToString(",") { it.packageName })
         }
+    }
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// Data
-// ────────────────────────────────────────────────────────────────────────
+private fun clearAllSavedData(context: Context) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { clear() }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Data models
+// ─────────────────────────────────────────────────────────────────────────
 data class AppInfo(
     val packageName: String,
     val label: String,
     val icon: Bitmap
 )
 
-// ────────────────────────────────────────────────────────────────────────
+class PageData(name: String) {
+    var name: String by mutableStateOf(name)
+    val apps: SnapshotStateList<AppInfo> = mutableStateListOf()
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Activity
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()   // super より前に呼ぶ必要あり
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            MaterialTheme {
-                LauncherScreen()
-            }
-        }
+        setContent { MaterialTheme { LauncherScreen() } }
     }
 }
 
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
 // LauncherScreen
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
 @Composable
 fun LauncherScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val apps = remember { mutableStateListOf<AppInfo>() }
-
-    // loadKey をインクリメントするたびにアプリリストを再読み込みする
+    val pages = remember { mutableStateListOf<PageData>() }
     var loadKey by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(loadKey) {
-        apps.clear()
-        withContext(Dispatchers.IO) {
-            val pm = context.packageManager
-            val intent = Intent(Intent.ACTION_MAIN, null).apply {
-                addCategory(Intent.CATEGORY_LAUNCHER)
-            }
+        data class RawData(
+            val allAppsMap: Map<String, AppInfo>,
+            val savedPages: List<SavedPageData>
+        )
 
-            // インストール済みアプリをすべて取得（packageName をキーにした Map）
-            val allApps = pm
-                .queryIntentActivities(intent, 0)
+        val raw = withContext(Dispatchers.IO) {
+            val pm = context.packageManager
+            val intent =
+                Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+            val appsMap = pm.queryIntentActivities(intent, 0)
                 .distinctBy { it.activityInfo.packageName }
                 .mapNotNull { info ->
                     try {
@@ -166,51 +186,63 @@ fun LauncherScreen() {
                     }
                 }
                 .associateBy { it.packageName }
-
-            // SharedPreferences から保存済み順序を読む
-            val savedOrder = loadSavedOrder(context)
-
-            val display = mutableListOf<AppInfo>()
-            if (savedOrder.isEmpty()) {
-                // 初回 or リセット後: アルファベット順で全表示
-                display.addAll(allApps.values.sortedBy { it.label })
-            } else {
-                // 保存順に並べる（アンインストール済みアプリは自動スキップ）
-                for (pkg in savedOrder) {
-                    allApps[pkg]?.let { display.add(it) }
+            RawData(appsMap, loadSavedPages(context))
+        }
+        pages.clear()
+        if (raw.savedPages.isEmpty()) {
+            PageData("ページ 1").also { p ->
+                p.apps.addAll(raw.allAppsMap.values.sortedBy { it.label })
+                pages.add(p)
+            }
+        } else {
+            val created = raw.savedPages.map { saved ->
+                PageData(saved.name).also { p ->
+                    saved.appOrder.forEach { pkg -> raw.allAppsMap[pkg]?.let { p.apps.add(it) } }
                 }
-                // 新たにインストールされたアプリは末尾に追加
-                val savedSet = savedOrder.toSet()
-                allApps.values
-                    .filter { it.packageName !in savedSet }
-                    .sortedBy { it.label }
-                    .forEach { display.add(it) }
             }
-
-            withContext(Dispatchers.Main) {
-                apps.addAll(display)
-            }
+            val assigned = created.flatMap { it.apps.map { a -> a.packageName } }.toSet()
+            raw.allAppsMap.values.filter { it.packageName !in assigned }.sortedBy { it.label }
+                .let { created.lastOrNull()?.apps?.addAll(it) }
+            pages.addAll(created)
         }
     }
 
+    val pagerState = rememberPagerState { pages.size.coerceAtLeast(1) }
+
     var isEditMode by remember { mutableStateOf(false) }
+    // ドラッグ中アプリと元ページ（最上位 Box で管理するためページ切り替え時にキャンセルされない）
     var draggingPkg by remember { mutableStateOf<String?>(null) }
+    var draggingFromPage by remember { mutableStateOf<Int?>(null) }
     var dragPosition by remember { mutableStateOf(Offset.Zero) }
     val itemBoundsMap = remember { mutableStateMapOf<String, Rect>() }
     var showResetDialog by remember { mutableStateOf(false) }
+    var deletePageTarget by remember { mutableStateOf<Int?>(null) }
+    var editingPageName by remember { mutableStateOf(false) }
+    var pageNameInput by remember { mutableStateOf("") }
+    var lastPageScrollMs by remember { mutableLongStateOf(0L) }
 
-    val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val statusBarPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val navBarPad = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    // 現在の並び順を SharedPreferences に保存するヘルパー
-    fun saveCurrentOrder() {
-        val packages = apps.map { it.packageName }
-        coroutineScope.launch(Dispatchers.IO) {
-            saveAppOrder(context, packages)
-        }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(editingPageName) { if (editingPageName) focusRequester.requestFocus() }
+
+    fun saveCurrent() {
+        coroutineScope.launch(Dispatchers.IO) { saveAllPages(context, pages) }
     }
 
-    BackHandler(enabled = isEditMode) { isEditMode = false }
+    BackHandler(enabled = isEditMode || editingPageName) {
+        if (editingPageName) {
+            keyboardController?.hide()
+            editingPageName = false
+        } else {
+            isEditMode = false
+        }
+    }
 
     // ── リセット確認ダイアログ ──────────────────────────────────────────
     if (showResetDialog) {
@@ -219,32 +251,58 @@ fun LauncherScreen() {
             title = { Text("パネルをリセット") },
             text = {
                 Text(
-                    "削除したアプリをすべて再表示し、\n" +
-                            "並び順も初期状態に戻します。\n" +
+                    "・追加したページをすべて削除\n" +
+                            "・ページ名を初期状態に戻す\n" +
+                            "・アイコンの並び順をアルファベット順に戻す\n\n" +
                             "よろしいですか？"
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     isEditMode = false
-                    // clear → reload を順番に実行する
+                    editingPageName = false
                     coroutineScope.launch {
-                        withContext(Dispatchers.IO) { clearAppOrder(context) }
-                        loadKey++   // LaunchedEffect(loadKey) を再実行
+                        withContext(Dispatchers.IO) { clearAllSavedData(context) }
+                        loadKey++
                     }
-                }) {
-                    Text("リセット", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
-                }
+                }) { Text("リセット", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { }) {
-                    Text("キャンセル")
-                }
+                TextButton(onClick = { showResetDialog = false }) { Text("キャンセル") }
             }
         )
     }
 
-    // ── 画面全体 ────────────────────────────────────────────────────────
+    // ── ページ削除確認ダイアログ ─────────────────────────────────────────
+    deletePageTarget?.let { targetIdx ->
+        AlertDialog(
+            onDismissRequest = { deletePageTarget = null },
+            title = { Text("ページを削除") },
+            text = {
+                val name = pages.getOrNull(targetIdx)?.name ?: ""
+                Text("「$name」を削除しますか？\nこのページのアプリはすべて最初のページへ移動します。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (pages.size > 1) {
+                        val removed = pages.removeAt(targetIdx)
+                        pages.firstOrNull()?.apps?.addAll(removed.apps)
+                        val safePage = (targetIdx - 1).coerceAtLeast(0)
+                        coroutineScope.launch { pagerState.animateScrollToPage(safePage) }
+                        saveCurrent()
+                    }
+                    deletePageTarget = null
+                }) { Text("削除", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletePageTarget = null }) { Text("キャンセル") }
+            }
+        )
+    }
+
+    // ── 画面全体
+    // ★ ドラッグ検出を最上位 Box に置く。
+    //    HorizontalPager のページアニメーションが起きてもここのジェスチャーは絶対にキャンセルされない。
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -253,110 +311,227 @@ fun LauncherScreen() {
                     colors = listOf(Color(0xFF1A1A2E), Color(0xFF16213E), Color(0xFF0F3460))
                 )
             )
-    ) {
-        // 読み込み中
-        if (apps.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = statusBarPadding),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("アプリを読み込み中...", color = Color.White, fontSize = 18.sp)
+            .pointerInput(Unit) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset ->
+                        // 押した座標に対応するタイルを boundsInRoot で探す
+                        val hit = itemBoundsMap.entries.firstOrNull { (_, bounds) ->
+                            bounds.contains(offset)
+                        } ?: return@detectDragGesturesAfterLongPress
+                        val fromPage =
+                            pages.indexOfFirst { p -> p.apps.any { it.packageName == hit.key } }
+                        if (fromPage < 0) return@detectDragGesturesAfterLongPress
+                        draggingPkg = hit.key
+                        draggingFromPage = fromPage
+                        dragPosition = offset
+                        isEditMode = true
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val curPkg = draggingPkg ?: return@detectDragGesturesAfterLongPress
+                        dragPosition += dragAmount
+
+                        // ページエッジスクロール（左右端 80px で自動ページ切り替え）
+                        val now = System.currentTimeMillis()
+                        if (now - lastPageScrollMs > 700L) {
+                            val cp = pagerState.currentPage
+                            when {
+                                dragPosition.x < 80f && cp > 0 -> {
+                                    coroutineScope.launch { pagerState.animateScrollToPage(cp - 1) }
+                                }
+
+                                dragPosition.x > screenWidthPx - 80f && cp < pages.size - 1 -> {
+                                    coroutineScope.launch { pagerState.animateScrollToPage(cp + 1) }
+                                }
+                            }
+                        }
+
+                        // 同ページ内の並び替え（ドラッグ元と現在表示ページが同じ場合のみ）
+                        if (pagerState.currentPage == draggingFromPage) {
+                            val pageApps = pages.getOrNull(pagerState.currentPage)?.apps
+                            if (pageApps != null) {
+                                itemBoundsMap.entries
+                                    .firstOrNull { (pkg, bounds) ->
+                                        pkg != curPkg &&
+                                                bounds.contains(dragPosition) &&
+                                                pageApps.any { it.packageName == pkg }
+                                    }
+                                    ?.key
+                                    ?.let { hoverPkg ->
+                                        val fi = pageApps.indexOfFirst { it.packageName == curPkg }
+                                        val ti =
+                                            pageApps.indexOfFirst { it.packageName == hoverPkg }
+                                        if (fi >= 0 && ti >= 0) pageApps.add(
+                                            ti,
+                                            pageApps.removeAt(fi)
+                                        )
+                                    }
+                            }
+                        }
+                    },
+                    onDragEnd = {
+                        val curPkg = draggingPkg
+                        val fromPage = draggingFromPage
+                        val toPage = pagerState.currentPage
+                        // 別ページへのドロップ → アプリを移動
+                        if (curPkg != null && fromPage != null && fromPage != toPage) {
+                            val src = pages.getOrNull(fromPage)
+                            val dst = pages.getOrNull(toPage)
+                            if (src != null && dst != null) {
+                                src.apps.firstOrNull { it.packageName == curPkg }?.let { app ->
+                                    src.apps.remove(app)
+                                    dst.apps.add(app)
+                                }
+                            }
+                        }
+                        draggingPkg = null
+                        draggingFromPage = null
+                        dragPosition = Offset.Zero
+                        saveCurrent()
+                    },
+                    onDragCancel = {
+                        draggingPkg = null
+                        draggingFromPage = null
+                        dragPosition = Offset.Zero
+                    }
+                )
             }
-        }
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Spacer(modifier = Modifier.height(statusBarPad + 52.dp))
 
-        // アプリグリッド（3 列）
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 10.dp,
-                end = 10.dp,
-                // トップバーの高さ分だけ余白を確保
-                top = statusBarPadding + 48.dp,
-                bottom = navBarPadding + 16.dp
-            )
-        ) {
-            itemsIndexed(
-                items = apps,
-                key = { _, app -> app.packageName }
-            ) { _, app ->
-                val isDragging = draggingPkg == app.packageName
-
-                AppTile(
-                    app = app,
-                    isDragging = isDragging,
-                    isEditMode = isEditMode,
-                    onDelete = {
-                        apps.remove(app)
-                        saveCurrentOrder()   // 削除後に保存
-                    },
-                    onTap = {
-                        if (isEditMode) {
-                            isEditMode = false   // タイルタップで編集モード終了
-                        } else {
-                            context.packageManager
-                                .getLaunchIntentForPackage(app.packageName)
-                                ?.let { context.startActivity(it) }
-                        }
-                    },
-                    modifier = Modifier
-                        .onGloballyPositioned { coords ->
-                            itemBoundsMap[app.packageName] = coords.boundsInRoot()
-                        }
-                        .pointerInput(app.packageName) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = { localOffset ->
-                                    val bounds = itemBoundsMap[app.packageName]
-                                    dragPosition = bounds?.let {
-                                        Offset(it.left + localOffset.x, it.top + localOffset.y)
-                                    } ?: localOffset
-                                    draggingPkg = app.packageName
-                                    isEditMode = true
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragPosition += dragAmount
-                                    val curPkg = draggingPkg
-                                    if (curPkg != null) {
-                                        itemBoundsMap.entries
-                                            .firstOrNull { (pkg, bounds) ->
-                                                pkg != curPkg && bounds.contains(dragPosition)
-                                            }
-                                            ?.key
-                                            ?.let { hoverPkg ->
-                                                val fromIdx =
-                                                    apps.indexOfFirst { it.packageName == curPkg }
-                                                val toIdx =
-                                                    apps.indexOfFirst { it.packageName == hoverPkg }
-                                                if (fromIdx >= 0 && toIdx >= 0) {
-                                                    apps.add(toIdx, apps.removeAt(fromIdx))
-                                                }
-                                            }
+            // ── HorizontalPager
+            // ★ ドラッグ中はユーザーによるスワイプを無効化。
+            //    ページ切り替えは上の pointerInput から animateScrollToPage で行う。
+            if (pages.isNotEmpty()) {
+                HorizontalPager(
+                    state = pagerState,
+                    userScrollEnabled = draggingPkg == null,  // ドラッグ中はページスワイプを封じる
+                    modifier = Modifier.weight(1f)
+                ) { pageIndex ->
+                    val page = pages.getOrNull(pageIndex) ?: return@HorizontalPager
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp
+                        )
+                    ) {
+                        itemsIndexed(
+                            items = page.apps,
+                            key = { _, app -> app.packageName }
+                        ) { _, app ->
+                            AppTile(
+                                app = app,
+                                isDragging = draggingPkg == app.packageName,
+                                isEditMode = isEditMode,
+                                onDelete = { page.apps.remove(app); saveCurrent() },
+                                onTap = {
+                                    if (isEditMode) {
+                                        isEditMode = false
+                                    } else {
+                                        context.packageManager
+                                            .getLaunchIntentForPackage(app.packageName)
+                                            ?.let { context.startActivity(it) }
                                     }
                                 },
-                                onDragEnd = {
-                                    draggingPkg = null
-                                    dragPosition = Offset.Zero
-                                    saveCurrentOrder()   // 並び替え後に保存
-                                },
-                                onDragCancel = {
-                                    draggingPkg = null
-                                    dragPosition = Offset.Zero
+                                // bounds 追跡のみ。ドラッグジェスチャーは最上位 Box が担当
+                                modifier = Modifier.onGloballyPositioned { coords ->
+                                    itemBoundsMap[app.packageName] = coords.boundsInRoot()
                                 }
                             )
                         }
-                )
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("アプリを読み込み中...", color = Color.White, fontSize = 18.sp)
+                }
+            }
+
+            // ── ページインジケーター ─────────────────────────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = navBarPad + 10.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                pages.forEachIndexed { index, _ ->
+                    val isCurrent = pagerState.currentPage == index
+                    Box(modifier = Modifier.padding(horizontal = 5.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .size(if (isCurrent) 10.dp else 7.dp)
+                                .background(
+                                    color = if (isCurrent) Color.White else Color.White.copy(alpha = 0.35f),
+                                    shape = CircleShape
+                                )
+                                .clickable {
+                                    coroutineScope.launch { pagerState.animateScrollToPage(index) }
+                                }
+                        )
+                        if (isEditMode && pages.size > 1) {
+                            Box(
+                                modifier = Modifier
+                                    .size(13.dp)
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 5.dp, y = (-5).dp)
+                                    .background(Color(0xFFD32F2F), CircleShape)
+                                    .border(1.dp, Color.White, CircleShape)
+                                    .clickable { deletePageTarget = index },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("×", color = Color.White, fontSize = 7.sp, lineHeight = 7.sp)
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .background(Color.White.copy(alpha = 0.20f), CircleShape)
+                        .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
+                        .clickable {
+                            val newPage = PageData("ページ ${pages.size + 1}")
+                            pages.add(newPage)
+                            val newIdx = pages.size - 1
+                            coroutineScope.launch { pagerState.animateScrollToPage(newIdx) }
+                            saveCurrent()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("+", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
-        // ── トップバー（ステータスバーのすぐ下に固定） ────────────────────
+        // ── ページ名編集中: 枠外タップでキーボードを閉じるオーバーレイ ───
+        if (editingPageName) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            keyboardController?.hide()
+                            editingPageName = false
+                        }
+                    }
+            )
+        }
+
+        // ── トップバー ────────────────────────────────────────────────────
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = statusBarPadding)
-                .background(Color.Black.copy(alpha = if (isEditMode) 0.70f else 0.30f))
+                .padding(top = statusBarPad)
+                .background(Color.Black.copy(alpha = if (isEditMode) 0.70f else 0.35f))
                 .align(Alignment.TopCenter)
         ) {
             Row(
@@ -366,24 +541,94 @@ fun LauncherScreen() {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // 左側: 編集モード時はヒント表示
-                Text(
-                    text = if (isEditMode) "✕ タップで削除 / タイルタップで終了" else "MyLauncher",
-                    color = Color.White.copy(alpha = if (isEditMode) 0.75f else 0.50f),
-                    fontSize = 12.sp,
-                    modifier = Modifier.weight(1f)
-                )
+                Box(modifier = Modifier.weight(1f)) {
+                    if (editingPageName && pages.isNotEmpty()) {
+                        BasicTextField(
+                            value = pageNameInput,
+                            onValueChange = { pageNameInput = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester),
+                            singleLine = true,
+                            textStyle = TextStyle(
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = {
+                                val t = pageNameInput.trim()
+                                if (t.isNotEmpty()) {
+                                    pages[pagerState.currentPage].name = t
+                                    saveCurrent()
+                                }
+                                editingPageName = false
+                            }),
+                            decorationBox = { inner ->
+                                Box {
+                                    if (pageNameInput.isEmpty()) {
+                                        Text(
+                                            "ページ名を入力",
+                                            color = Color.White.copy(alpha = 0.45f),
+                                            fontSize = 15.sp
+                                        )
+                                    }
+                                    inner()
+                                }
+                            }
+                        )
+                    } else {
+                        Column {
+                            val currentName = pages.getOrNull(pagerState.currentPage)?.name ?: ""
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = currentName,
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable {
+                                        if (pages.isNotEmpty()) {
+                                            pageNameInput = pages[pagerState.currentPage].name
+                                            editingPageName = true
+                                        }
+                                    }
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "✎",
+                                    color = Color.White.copy(alpha = 0.45f),
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.clickable {
+                                        if (pages.isNotEmpty()) {
+                                            pageNameInput = pages[pagerState.currentPage].name
+                                            editingPageName = true
+                                        }
+                                    }
+                                )
+                            }
+                            if (isEditMode) {
+                                Text(
+                                    text = "✕タップで削除 / タイルタップで終了",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
+                }
 
-                // 右側: ボタン群
+                Spacer(modifier = Modifier.width(8.dp))
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // リセットボタン（常に表示）
                     Box(
                         modifier = Modifier
                             .background(
                                 color = Color(0xFFD32F2F).copy(alpha = 0.85f),
                                 shape = RoundedCornerShape(20.dp)
                             )
-                            .clickable { }
+                            .clickable { showResetDialog = true }
                             .padding(horizontal = 12.dp, vertical = 5.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -394,8 +639,6 @@ fun LauncherScreen() {
                             fontWeight = FontWeight.Bold
                         )
                     }
-
-                    // 完了ボタン（編集モード時のみ表示）
                     if (isEditMode) {
                         Box(
                             modifier = Modifier
@@ -416,9 +659,9 @@ fun LauncherScreen() {
             }
         }
 
-        // ドラッグ中ゴースト（指に追従）
+        // ── ドラッグゴースト ─────────────────────────────────────────────
         if (draggingPkg != null) {
-            val draggedApp = apps.firstOrNull { it.packageName == draggingPkg }
+            val draggedApp = pages.flatMap { it.apps }.firstOrNull { it.packageName == draggingPkg }
             if (draggedApp != null) {
                 val ghostSize = 80.dp
                 Column(
@@ -446,9 +689,9 @@ fun LauncherScreen() {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// AppTile
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// AppTile  ※ ドラッグジェスチャーは除去済み（最上位 Box が担当）
+// ─────────────────────────────────────────────────────────────────────────
 @Composable
 fun AppTile(
     app: AppInfo,
@@ -461,7 +704,6 @@ fun AppTile(
     val bitmap = remember(app.packageName) { app.icon.asImageBitmap() }
 
     Box(modifier = modifier.padding(6.dp)) {
-        // パネル本体
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -477,9 +719,8 @@ fun AppTile(
                 )
                 .border(
                     width = 0.8.dp,
-                    color = if (isDragging) Color.White.copy(alpha = 0.08f) else Color.White.copy(
-                        alpha = 0.30f
-                    ),
+                    color = if (isDragging) Color.White.copy(alpha = 0.08f)
+                    else Color.White.copy(alpha = 0.30f),
                     shape = RoundedCornerShape(18.dp)
                 )
                 .clickable { onTap() }
@@ -504,7 +745,6 @@ fun AppTile(
             )
         }
 
-        // 削除Xバッジ（編集モード中・非ドラッグ時のみ表示）
         if (isEditMode && !isDragging) {
             Box(
                 modifier = Modifier
