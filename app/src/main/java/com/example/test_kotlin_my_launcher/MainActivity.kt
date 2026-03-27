@@ -45,7 +45,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -231,7 +234,7 @@ fun LauncherScreen() {
             }
             val assigned = created.flatMap { it.apps.map { a -> a.packageName } }.toSet()
             raw.allAppsMap.values.filter { it.packageName !in assigned }.sortedBy { it.label }
-                .let { created.lastOrNull()?.apps?.addAll(it) }
+                .let { created.firstOrNull()?.apps?.addAll(it) }
             pages.addAll(created)
         }
     }
@@ -578,24 +581,41 @@ fun LauncherScreen() {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 14.dp, top = 10.dp, bottom = 2.dp),
-                    horizontalArrangement = Arrangement.Start,
-                    verticalAlignment = Alignment.Bottom
+                        .padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "あめらん",
-                        color = Color.White,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 2.sp
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "- Amaging Launcher -",
-                        color = Color.White.copy(alpha = 0.65f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Normal
-                    )
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(
+                            text = "あめらん",
+                            color = Color.White,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "- Amaging Launcher -",
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Normal
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color.White.copy(alpha = 0.15f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
+                            .clickable { loadKey++ },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "リロード",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(5.dp))
