@@ -19,6 +19,21 @@
 10. [UI 構造](#10-ui-構造)
 11. [アイコン・スプラッシュ画面の更新手順](#11-アイコンスプラッシュ画面の更新手順)
 
+### セクション 7 サブ目次
+- 7-1 タブ UI
+- 7-2 ページ名編集（タブ内インライン）
+- 7-3 タブの「+」「−」ボタン
+- 7-4 ページごとの背景色
+- 7-5 カラーパレット
+- 7-6 タブ移動ボタン
+- 7-7 リセットダイアログ
+- 7-8 アプリタイトル表示 ＋ リロードボタン（isRefreshing 対応）
+- 7-9 アプリ名の変更
+- 7-10 ピン留めショートカット対応
+- 7-11 「ページ1へ戻す」バッジ
+
+> 最終更新: 2026-03-28
+
 ---
 
 ## 1. アプリの概念
@@ -646,6 +661,13 @@ Row(
 **リロード動作**: `loadKey++` → `LaunchedEffect(loadKey)` が再実行され PackageManager から
 最新のアプリ一覧を取得。アンインストール済みアプリは自動除外。新規インストールアプリは page 0 末尾に追加。
 
+**ローディング中の表示切り替え**:
+- `isRefreshing: Boolean` state を追加
+- リロード開始時: `isRefreshing = true` → CircularProgressIndicator を表示
+- `LaunchedEffect(loadKey)` 終了時: `isRefreshing = false` → 通常の Refresh アイコンに戻る
+- リロード中はボタンを無効化（`clickable(enabled = !isRefreshing)`）
+- ページ 0 へ自動スクロール後にリロード: `pagerState.animateScrollToPage(0); loadKey++`
+
 **追加 import**:
 ```kotlin
 import androidx.compose.material.icons.Icons
@@ -663,6 +685,86 @@ implementation("androidx.compose.material:material-icons-core")
 `res/values/strings.xml`:
 ```xml
 <string name="app_name">あめらん</string>
+```
+
+### 7-10. ピン留めショートカット対応（Chrome「ホーム画面に追加」）
+
+Chrome や他のアプリから「ホーム画面に追加」でピン留めされたショートカットをアプリ一覧に表示・起動できる。
+
+**受信フロー**:
+1. `CONFIRM_PIN_SHORTCUT` インテントを `MainActivity.onNewIntent` で受け取る
+2. `LauncherApps.getPinItemRequest(intent)?.accept()` で承諾
+3. `_pinTrigger.intValue++` → `LaunchedEffect(pinTrigger)` → `loadKey++` で再読み込み
+
+```kotlin
+private fun acceptPinShortcut(intent: Intent?) {
+    if (intent?.action != "android.content.pm.action.CONFIRM_PIN_SHORTCUT") return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val la = getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
+        la.getPinItemRequest(intent)
+            ?.takeIf { it.requestType == LauncherApps.PinItemRequest.REQUEST_TYPE_SHORTCUT }
+            ?.accept()
+    }
+    _pinTrigger.intValue++
+}
+```
+
+**読み込みフロー**（`LaunchedEffect(loadKey)` 内）:
+- `LauncherApps.getShortcuts(query, Process.myUserHandle())` でピン留めショートカットを取得
+- API 29+ では `FLAG_MATCH_PINNED_BY_ANY_LAUNCHER` を追加（他のランチャーでピン留めされたものも含む）
+- `AppInfo(shortcutId = info.id)` として通常アプリと同列に管理
+- `hasShortcutHostPermission()` が false のとき（デフォルトホームアプリでない状態）は空リストを返す
+
+**起動**（`AppTile` の `onTap`）:
+```kotlin
+if (app.shortcutId != null) {
+    la.startShortcut(app.packageName, app.shortcutId, null, null, Process.myUserHandle())
+} else {
+    packageManager.getLaunchIntentForPackage(app.packageName)?.let { startActivity(it) }
+}
+```
+
+**保存**: `uniqueKey`（`s:pkg/id` 形式）で SharedPreferences に保存。再起動後も復元される。
+
+**必要な API**: `LauncherApps` は API 21+、`getShortcuts()` は API 25+。
+
+### 7-11. 「ページ1へ戻す」バッジ（AppTile 左上）
+
+ページ 2 以降にいるとき、編集モード中のアプリタイル左上に青い「↩」バッジを表示。
+タップするとそのアプリをページ 1 の末尾に移動する。
+
+**AppTile の引数**:
+```kotlin
+onMoveToFirst: (() -> Unit)? = null  // null = ページ1にいる場合は非表示
+```
+
+**呼び出し側**（`LauncherScreen`）:
+```kotlin
+onMoveToFirst = if (pageIndex > 0) {
+    {
+        page.apps.remove(app)
+        pages.firstOrNull()?.apps?.add(app)
+        saveCurrent()
+    }
+} else null
+```
+
+**バッジ表示**:
+```kotlin
+if (onMoveToFirst != null) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .align(Alignment.TopStart)
+            .offset(x = (-3).dp, y = (-3).dp)
+            .background(Color(0xFF1565C0), CircleShape)
+            .border(1.5.dp, Color.White, CircleShape)
+            .clickable(onClick = onMoveToFirst),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("↩", color = Color.White, fontSize = 10.sp)
+    }
+}
 ```
 
 ---
@@ -685,8 +787,14 @@ class PageData(name: String, color: Long = DEFAULT_PAGE_COLOR) {
 data class AppInfo(
     val packageName: String,   // 例: "com.google.android.youtube"
     val label: String,         // 表示名（例: "YouTube"）
-    val icon: Bitmap           // 96×96px にリサイズ済み
-)
+    val icon: Bitmap,          // 96×96px にリサイズ済み
+    val shortcutId: String? = null  // null = 通常アプリ, non-null = ピン留めショートカット
+) {
+    // ドラッグ追跡・グリッドキー・保存キーに使う一意キー
+    // 通常アプリ: packageName と同じ
+    // ショートカット: "s:packageName/shortcutId" 形式
+    val uniqueKey: String get() = if (shortcutId != null) "s:$packageName/$shortcutId" else packageName
+}
 ```
 
 ### 起動時のデータ読み込みフロー
@@ -711,7 +819,7 @@ IO スレッドで実行
 |---|---|---|
 | `page_count` | Int | ページ数 |
 | `page_name_N` | String | N 番目のページ名（0 始まり）|
-| `page_apps_N` | String | N 番目のページのアプリ順（packageName をカンマ区切り）|
+| `page_apps_N` | String | N 番目のページのアプリ順（`uniqueKey` をカンマ区切り。通常アプリは packageName、ショートカットは `s:pkg/id`）|
 | `page_color_N` | Long | N 番目のページの背景色（ARGB Long）|
 
 **定数定義**（`MainActivity.kt` 上部）:
@@ -845,4 +953,4 @@ done
 
 ---
 
-*最終更新: 2026-03-27（Bug 9・10 追記、7-8 リロードボタン追加、依存関係更新）*
+*最終更新: 2026-03-28（7-10 ピン留めショートカット対応、7-11 ページ1へ戻すバッジ追加、7-8 isRefreshing 追記、AppInfo/SharedPreferences のデータ設計更新）*
