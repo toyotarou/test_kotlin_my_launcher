@@ -2,7 +2,10 @@ package com.example.test_kotlin_my_launcher
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.LauncherApps
 import android.graphics.Bitmap
+import android.os.Build
+import android.os.Process
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -48,6 +51,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -147,7 +151,7 @@ private fun saveAllPages(context: Context, pages: List<PageData>) {
         putInt(KEY_PAGE_COUNT, pages.size)
         pages.forEachIndexed { i, page ->
             putString("$KEY_PAGE_NAME$i", page.name)
-            putString("$KEY_PAGE_APPS$i", page.apps.joinToString(",") { it.packageName })
+            putString("$KEY_PAGE_APPS$i", page.apps.joinToString(",") { it.uniqueKey })
             putLong("$KEY_PAGE_COLOR$i", page.color)
         }
     }
@@ -163,8 +167,12 @@ private fun clearAllSavedData(context: Context) {
 data class AppInfo(
     val packageName: String,
     val label: String,
-    val icon: Bitmap
-)
+    val icon: Bitmap,
+    val shortcutId: String? = null  // null = 通常アプリ, non-null = ピン留めショートカット
+) {
+    // ドラッグ追跡・グリッドキー用の一意キー
+    val uniqueKey: String get() = if (shortcutId != null) "s:$packageName/$shortcutId" else packageName
+}
 
 class PageData(name: String, color: Long = DEFAULT_PAGE_COLOR) {
     var name: String by mutableStateOf(name)
@@ -176,11 +184,31 @@ class PageData(name: String, color: Long = DEFAULT_PAGE_COLOR) {
 // Activity
 // ─────────────────────────────────────────────────────────────────────────
 class MainActivity : ComponentActivity() {
+    private val _pinTrigger = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()   // super より前に呼ぶ必要あり
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { MaterialTheme { LauncherScreen() } }
+        acceptPinShortcut(intent)
+        setContent { MaterialTheme { LauncherScreen(pinTrigger = _pinTrigger.intValue) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        acceptPinShortcut(intent)
+    }
+
+    // Chrome などから「ホーム画面に追加」されたときに呼ばれる
+    private fun acceptPinShortcut(intent: Intent?) {
+        if (intent?.action != "android.content.pm.action.CONFIRM_PIN_SHORTCUT") return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val la = getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
+            la.getPinItemRequest(intent)
+                ?.takeIf { it.requestType == LauncherApps.PinItemRequest.REQUEST_TYPE_SHORTCUT }
+                ?.accept()
+        }
+        _pinTrigger.intValue++
     }
 }
 
@@ -188,15 +216,20 @@ class MainActivity : ComponentActivity() {
 // LauncherScreen
 // ─────────────────────────────────────────────────────────────────────────
 @Composable
-fun LauncherScreen() {
+fun LauncherScreen(pinTrigger: Int = 0) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val pages = remember { mutableStateListOf<PageData>() }
     var loadKey by remember { mutableIntStateOf(0) }
+    var isRefreshing by remember { mutableStateOf(false) }
+
+    // Chrome などでショートカットがピン留めされたら再読み込み
+    LaunchedEffect(pinTrigger) { if (pinTrigger > 0) loadKey++ }
 
     LaunchedEffect(loadKey) {
         data class RawData(
-            val allAppsMap: Map<String, AppInfo>,
+            val allAppsMap: Map<String, AppInfo>,       // key: packageName
+            val shortcutsMap: Map<String, AppInfo>,     // key: uniqueKey ("s:pkg/id")
             val savedPages: List<SavedPageData>
         )
 
@@ -218,25 +251,91 @@ fun LauncherScreen() {
                     }
                 }
                 .associateBy { it.packageName }
-            RawData(appsMap, loadSavedPages(context))
+
+            // ピン留めショートカット（API 25+ / Chrome「ホーム画面に追加」など）
+            val shortcutsMap: Map<String, AppInfo> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+                try {
+                    val la = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
+
+                    // デフォルトホームアプリでないと getShortcuts() は SecurityException になる
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !la.hasShortcutHostPermission()) {
+                        emptyMap()
+                    } else {
+                        // API 29+: 他のランチャーでピン留めされたものも含めて取得
+                        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED or
+                                    LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED_BY_ANY_LAUNCHER
+                        } else {
+                            LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED
+                        }
+                        val query = LauncherApps.ShortcutQuery().setQueryFlags(flags)
+
+                        @Suppress("NewApi")
+                        la.getShortcuts(query, Process.myUserHandle())
+                            ?.mapNotNull { info ->
+                                val drawable = try {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        la.getShortcutBadgedIconDrawable(info, 0)
+                                            ?: la.getShortcutIconDrawable(info, 0)
+                                    } else {
+                                        la.getShortcutIconDrawable(info, 0)
+                                    }
+                                } catch (_: Exception) { null }
+                                val bitmap = if (drawable != null) {
+                                    drawable.toBitmap(96, 96)
+                                } else {
+                                    android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888).also { bmp ->
+                                        val canvas = android.graphics.Canvas(bmp)
+                                        android.graphics.Paint().also { paint ->
+                                            paint.color = android.graphics.Color.GRAY
+                                            canvas.drawCircle(48f, 48f, 48f, paint)
+                                        }
+                                    }
+                                }
+                                AppInfo(
+                                    packageName = info.`package`,
+                                    label = info.shortLabel?.toString() ?: info.`package`,
+                                    icon = bitmap,
+                                    shortcutId = info.id
+                                )
+                            }
+                            ?.associateBy { it.uniqueKey }
+                            ?: emptyMap()
+                    }
+                } catch (_: Exception) {
+                    emptyMap()
+                }
+            } else emptyMap()
+
+            RawData(appsMap, shortcutsMap, loadSavedPages(context))
         }
         pages.clear()
         if (raw.savedPages.isEmpty()) {
             PageData("ページ 1").also { p ->
                 p.apps.addAll(raw.allAppsMap.values.sortedBy { it.label })
+                p.apps.addAll(raw.shortcutsMap.values.sortedBy { it.label })
                 pages.add(p)
             }
         } else {
             val created = raw.savedPages.map { saved ->
                 PageData(saved.name, saved.color).also { p ->
-                    saved.appOrder.forEach { pkg -> raw.allAppsMap[pkg]?.let { p.apps.add(it) } }
+                    saved.appOrder.forEach { key ->
+                        if (key.startsWith("s:")) {
+                            raw.shortcutsMap[key]?.let { p.apps.add(it) }
+                        } else {
+                            raw.allAppsMap[key]?.let { p.apps.add(it) }
+                        }
+                    }
                 }
             }
-            val assigned = created.flatMap { it.apps.map { a -> a.packageName } }.toSet()
-            raw.allAppsMap.values.filter { it.packageName !in assigned }.sortedBy { it.label }
+            val assignedKeys = created.flatMap { it.apps.map { a -> a.uniqueKey } }.toSet()
+            raw.allAppsMap.values.filter { it.uniqueKey !in assignedKeys }.sortedBy { it.label }
+                .let { created.firstOrNull()?.apps?.addAll(it) }
+            raw.shortcutsMap.values.filter { it.uniqueKey !in assignedKeys }.sortedBy { it.label }
                 .let { created.firstOrNull()?.apps?.addAll(it) }
             pages.addAll(created)
         }
+        isRefreshing = false
     }
 
     val pagerState = rememberPagerState { pages.size.coerceAtLeast(1) }
@@ -396,7 +495,7 @@ fun LauncherScreen() {
                         // 現ページの packageName セットでフィルタする。
                         val currentPageIdx = pagerState.currentPage
                         val currentPagePkgs = pages.getOrNull(currentPageIdx)
-                            ?.apps?.map { it.packageName }?.toSet() ?: emptySet()
+                            ?.apps?.map { it.uniqueKey }?.toSet() ?: emptySet()
                         val hit = itemBoundsMap.entries.firstOrNull { (pkg, bounds) ->
                             pkg in currentPagePkgs && bounds.contains(offset)
                         } ?: return@detectDragGesturesAfterLongPress
@@ -438,13 +537,13 @@ fun LauncherScreen() {
                                     .firstOrNull { (pkg, bounds) ->
                                         pkg != curPkg &&
                                                 bounds.contains(dragPosition) &&
-                                                pageApps.any { it.packageName == pkg }
+                                                pageApps.any { it.uniqueKey == pkg }
                                     }
                                     ?.key
                                     ?.let { hoverPkg ->
-                                        val fi = pageApps.indexOfFirst { it.packageName == curPkg }
+                                        val fi = pageApps.indexOfFirst { it.uniqueKey == curPkg }
                                         val ti =
-                                            pageApps.indexOfFirst { it.packageName == hoverPkg }
+                                            pageApps.indexOfFirst { it.uniqueKey == hoverPkg }
                                         if (fi >= 0 && ti >= 0) pageApps.add(
                                             ti,
                                             pageApps.removeAt(fi)
@@ -463,7 +562,7 @@ fun LauncherScreen() {
                             val src = pages.getOrNull(fromPage)
                             val dst = pages.getOrNull(toPage)
                             if (src != null && dst != null) {
-                                src.apps.firstOrNull { it.packageName == curPkg }?.let { app ->
+                                src.apps.firstOrNull { it.uniqueKey == curPkg }?.let { app ->
                                     src.apps.remove(app)
                                     dst.apps.add(app)
                                 }
@@ -515,16 +614,31 @@ fun LauncherScreen() {
                         ) {
                             itemsIndexed(
                                 items = page.apps,
-                                key = { _, app -> app.packageName }
-                            ) { _, app ->
+                                key = { _, app -> app.uniqueKey }
+                            ) { _, app ->  // pageIndex は HorizontalPager のスコープ変数を使う
                                 AppTile(
                                     app = app,
-                                    isDragging = draggingPkg == app.packageName,
+                                    isDragging = draggingPkg == app.uniqueKey,
                                     isEditMode = isEditMode,
                                     onDelete = { page.apps.remove(app); saveCurrent() },
+                                    onMoveToFirst = if (pageIndex > 0) {
+                                        {
+                                            page.apps.remove(app)
+                                            pages.firstOrNull()?.apps?.add(app)
+                                            saveCurrent()
+                                        }
+                                    } else null,
                                     onTap = {
                                         if (isEditMode) {
                                             isEditMode = false
+                                        } else if (app.shortcutId != null) {
+                                            // ピン留めショートカット（Chrome ブックマークなど）を起動
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+                                                try {
+                                                    val la = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
+                                                    la.startShortcut(app.packageName, app.shortcutId, null, null, Process.myUserHandle())
+                                                } catch (_: Exception) {}
+                                            }
                                         } else {
                                             context.packageManager
                                                 .getLaunchIntentForPackage(app.packageName)
@@ -533,7 +647,7 @@ fun LauncherScreen() {
                                     },
                                     // bounds 追跡のみ。ドラッグジェスチャーは最上位 Box が担当
                                     modifier = Modifier.onGloballyPositioned { coords ->
-                                        itemBoundsMap[app.packageName] = coords.boundsInRoot()
+                                        itemBoundsMap[app.uniqueKey] = coords.boundsInRoot()
                                     }
                                 )
                             }
@@ -606,15 +720,29 @@ fun LauncherScreen() {
                             .size(36.dp)
                             .background(Color.White.copy(alpha = 0.15f), CircleShape)
                             .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
-                            .clickable { loadKey++ },
+                            .clickable(enabled = !isRefreshing) {
+                                isRefreshing = true
+                                coroutineScope.launch {
+                                    pagerState.animateScrollToPage(0)
+                                    loadKey++
+                                }
+                            },
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "リロード",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        if (isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "リロード",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
 
@@ -941,7 +1069,7 @@ fun LauncherScreen() {
 
         // ── ドラッグゴースト ─────────────────────────────────────────────
         if (draggingPkg != null) {
-            val draggedApp = pages.flatMap { it.apps }.firstOrNull { it.packageName == draggingPkg }
+            val draggedApp = pages.flatMap { it.apps }.firstOrNull { it.uniqueKey == draggingPkg }
             if (draggedApp != null) {
                 val ghostSize = 80.dp
                 Column(
@@ -979,9 +1107,10 @@ fun AppTile(
     isEditMode: Boolean,
     onDelete: () -> Unit,
     onTap: () -> Unit,
+    onMoveToFirst: (() -> Unit)? = null,  // null = ページ1にいる場合は非表示
     modifier: Modifier = Modifier
 ) {
-    val bitmap = remember(app.packageName) { app.icon.asImageBitmap() }
+    val bitmap = remember(app.uniqueKey) { app.icon.asImageBitmap() }
 
     Box(modifier = modifier.padding(6.dp)) {
         Column(
@@ -1026,6 +1155,7 @@ fun AppTile(
         }
 
         if (isEditMode && !isDragging) {
+            // 右上: 削除バッジ
             Box(
                 modifier = Modifier
                     .size(22.dp)
@@ -1044,6 +1174,28 @@ fun AppTile(
                     fontWeight = FontWeight.Bold,
                     lineHeight = 10.sp
                 )
+            }
+            // 左上: ページ1へ戻すバッジ（ページ1以外にいるときのみ表示）
+            if (onMoveToFirst != null) {
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .align(Alignment.TopStart)
+                        .offset(x = (-3).dp, y = (-3).dp)
+                        .zIndex(10f)
+                        .background(Color(0xFF1565C0), CircleShape)
+                        .border(1.5.dp, Color.White, CircleShape)
+                        .clickable(onClick = onMoveToFirst),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "↩",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 10.sp
+                    )
+                }
             }
         }
     }
