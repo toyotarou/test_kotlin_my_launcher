@@ -32,6 +32,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -95,10 +98,33 @@ import kotlin.math.roundToInt
 // ─────────────────────────────────────────────────────────────────────────
 private const val PREFS_NAME = "launcher_prefs"
 private const val KEY_PAGE_COUNT = "page_count"
-private const val KEY_PAGE_NAME = "page_name_"  // + index
-private const val KEY_PAGE_APPS = "page_apps_"  // + index
+private const val KEY_PAGE_NAME = "page_name_"   // + index
+private const val KEY_PAGE_APPS = "page_apps_"   // + index
+private const val KEY_PAGE_COLOR = "page_color_" // + index
+private val DEFAULT_PAGE_COLOR = 0xFF3D5A8AL     // デフォルト: ダークブルー
 
-private data class SavedPageData(val name: String, val appOrder: List<String>)
+// ── テーマカラーパレット（48色）
+val themeColorPalette: List<Long> = listOf(
+    // 深色系
+    0xFFE53935L, 0xFF1E88E5L, 0xFF43A047L, 0xFF8E24AAL, 0xFFFFA726L, 0xFF00ACC1L,
+    0xFFFDD835L, 0xFF6D4C41L, 0xFFD81B60L, 0xFF3949ABL, 0xFF00897BL, 0xFF7CB342L,
+    0xFF5E35B1L, 0xFFFB8C00L, 0xFF00838FL, 0xFFF4511EL, 0xFF558B2FL, 0xFF6A1B9AL,
+    0xFF2E7D32L, 0xFF283593L, 0xFFAD1457L, 0xFF4E342EL, 0xFF1565C0L, 0xFF9E9D24L,
+    // 中明度系
+    0xFF42A5F5L, 0xFF66BB6AL, 0xFFAB47BCL, 0xFFFFB74DL, 0xFF26C6DAL, 0xFFFFF176L,
+    0xFF8D6E63L, 0xFFF06292L, 0xFF5C6BC0L, 0xFF26A69AL, 0xFF9CCC65L, 0xFF9575CDL,
+    // 淡色系
+    0xFFFFCC80L, 0xFF80DEEAL, 0xFFFFAB91L, 0xFFC5E1A5L, 0xFFB39DDBL, 0xFFA5D6A7L,
+    0xFF9FA8DAL, 0xFFF48FB1L, 0xFFBCAAA4L, 0xFFEF5350L, 0xFFBDBDBDL, 0xFFE0E0E0L
+)
+
+// 選択カラーから暗めのグラデーション3色を生成
+fun themeGradient(base: Color): List<Color> {
+    fun dk(c: Color, f: Float) = Color(c.red * f, c.green * f, c.blue * f)
+    return listOf(dk(base, 0.30f), dk(base, 0.52f), dk(base, 0.78f))
+}
+
+private data class SavedPageData(val name: String, val appOrder: List<String>, val color: Long)
 
 private fun loadSavedPages(context: Context): List<SavedPageData> {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -108,7 +134,8 @@ private fun loadSavedPages(context: Context): List<SavedPageData> {
         val name = prefs.getString("$KEY_PAGE_NAME$i", "ページ ${i + 1}") ?: "ページ ${i + 1}"
         val raw = prefs.getString("$KEY_PAGE_APPS$i", "") ?: ""
         val apps = if (raw.isEmpty()) emptyList() else raw.split(",").filter { it.isNotBlank() }
-        SavedPageData(name, apps)
+        val color = prefs.getLong("$KEY_PAGE_COLOR$i", DEFAULT_PAGE_COLOR)
+        SavedPageData(name, apps, color)
     }
 }
 
@@ -118,6 +145,7 @@ private fun saveAllPages(context: Context, pages: List<PageData>) {
         pages.forEachIndexed { i, page ->
             putString("$KEY_PAGE_NAME$i", page.name)
             putString("$KEY_PAGE_APPS$i", page.apps.joinToString(",") { it.packageName })
+            putLong("$KEY_PAGE_COLOR$i", page.color)
         }
     }
 }
@@ -135,8 +163,9 @@ data class AppInfo(
     val icon: Bitmap
 )
 
-class PageData(name: String) {
+class PageData(name: String, color: Long = DEFAULT_PAGE_COLOR) {
     var name: String by mutableStateOf(name)
+    var color: Long by mutableStateOf(color)
     val apps: SnapshotStateList<AppInfo> = mutableStateListOf()
 }
 
@@ -196,7 +225,7 @@ fun LauncherScreen() {
             }
         } else {
             val created = raw.savedPages.map { saved ->
-                PageData(saved.name).also { p ->
+                PageData(saved.name, saved.color).also { p ->
                     saved.appOrder.forEach { pkg -> raw.allAppsMap[pkg]?.let { p.apps.add(it) } }
                 }
             }
@@ -213,6 +242,7 @@ fun LauncherScreen() {
     // ドラッグ中アプリと元ページ（最上位 Box で管理するためページ切り替え時にキャンセルされない）
     var draggingPkg by remember { mutableStateOf<String?>(null) }
     var draggingFromPage by remember { mutableStateOf<Int?>(null) }
+    var dragTargetPage by remember { mutableStateOf<Int?>(null) }
     var dragPosition by remember { mutableStateOf(Offset.Zero) }
     val itemBoundsMap = remember { mutableStateMapOf<String, Rect>() }
     var showResetDialog by remember { mutableStateOf(false) }
@@ -220,6 +250,8 @@ fun LauncherScreen() {
     var editingPageName by remember { mutableStateOf(false) }
     var pageNameInput by remember { mutableStateOf("") }
     var lastPageScrollMs by remember { mutableLongStateOf(0L) }
+    var showColorPicker by remember { mutableStateOf(false) }
+    var isTabMoveMode by remember { mutableStateOf(false) }
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -229,7 +261,11 @@ fun LauncherScreen() {
 
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val tabListState = rememberLazyListState()
     LaunchedEffect(editingPageName) { if (editingPageName) focusRequester.requestFocus() }
+    LaunchedEffect(pagerState.currentPage) {
+        if (pages.isNotEmpty()) tabListState.animateScrollToItem(pagerState.currentPage)
+    }
 
     fun saveCurrent() {
         coroutineScope.launch(Dispatchers.IO) { saveAllPages(context, pages) }
@@ -247,28 +283,22 @@ fun LauncherScreen() {
     // ── リセット確認ダイアログ ──────────────────────────────────────────
     if (showResetDialog) {
         AlertDialog(
-            onDismissRequest = { },
-            title = { Text("パネルをリセット") },
-            text = {
-                Text(
-                    "・追加したページをすべて削除\n" +
-                            "・ページ名を初期状態に戻す\n" +
-                            "・アイコンの並び順をアルファベット順に戻す\n\n" +
-                            "よろしいですか？"
-                )
-            },
+            onDismissRequest = { showResetDialog = false },
+            title = { Text("リセット") },
+            text = { Text("リセットして良いですか？") },
             confirmButton = {
                 TextButton(onClick = {
+                    showResetDialog = false
                     isEditMode = false
                     editingPageName = false
                     coroutineScope.launch {
                         withContext(Dispatchers.IO) { clearAllSavedData(context) }
                         loadKey++
                     }
-                }) { Text("リセット", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold) }
+                }) { Text("はい", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { showResetDialog = false }) { Text("キャンセル") }
+                TextButton(onClick = { showResetDialog = false }) { Text("いいえ") }
             }
         )
     }
@@ -279,8 +309,13 @@ fun LauncherScreen() {
             onDismissRequest = { deletePageTarget = null },
             title = { Text("ページを削除") },
             text = {
+                val appCount = pages.getOrNull(targetIdx)?.apps?.size ?: 0
                 val name = pages.getOrNull(targetIdx)?.name ?: ""
-                Text("「$name」を削除しますか？\nこのページのアプリはすべて最初のページへ移動します。")
+                if (appCount > 0) {
+                    Text("アプリアイコンが存在しますがこのタブを消して良いですか？\n（${appCount}個のアプリは最初のページへ移動します）")
+                } else {
+                    Text("「$name」を削除しますか？")
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -295,7 +330,49 @@ fun LauncherScreen() {
                 }) { Text("削除", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { deletePageTarget = null }) { Text("キャンセル") }
+                TextButton(onClick = { deletePageTarget = null }) { Text("いいえ") }
+            }
+        )
+    }
+
+    // ── カラーピッカーダイアログ ──────────────────────────────────────────
+    if (showColorPicker) {
+        val currentPage = pages.getOrNull(pagerState.currentPage)
+        AlertDialog(
+            onDismissRequest = { showColorPicker = false },
+            title = { Text("「${currentPage?.name ?: ""}」の背景色") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
+                    themeColorPalette.chunked(6).forEach { rowColors ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            rowColors.forEach { colorLong ->
+                                val isSelected = currentPage?.color == colorLong
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(Color(colorLong.toInt()), CircleShape)
+                                        .border(
+                                            width = if (isSelected) 3.dp else 1.dp,
+                                            color = if (isSelected) Color.White
+                                            else Color.Gray.copy(alpha = 0.4f),
+                                            shape = CircleShape
+                                        )
+                                        .clickable {
+                                            currentPage?.color = colorLong
+                                            saveCurrent()
+                                            showColorPicker = false
+                                        }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showColorPicker = false }) { Text("閉じる") }
             }
         )
     }
@@ -306,23 +383,23 @@ fun LauncherScreen() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color(0xFF1A1A2E), Color(0xFF16213E), Color(0xFF0F3460))
-                )
-            )
+            .background(Color(0xFF0D0D1A.toInt()))
             .pointerInput(Unit) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
-                        // 押した座標に対応するタイルを boundsInRoot で探す
-                        val hit = itemBoundsMap.entries.firstOrNull { (_, bounds) ->
-                            bounds.contains(offset)
+                        // 現在表示中のページのアプリのみを対象にして座標ヒットを検索する。
+                        // HorizontalPager は隣接ページも事前描画するため itemBoundsMap には
+                        // 全ページの bounds が混在する。現ページ外の stale bounds を踏まないよう
+                        // 現ページの packageName セットでフィルタする。
+                        val currentPageIdx = pagerState.currentPage
+                        val currentPagePkgs = pages.getOrNull(currentPageIdx)
+                            ?.apps?.map { it.packageName }?.toSet() ?: emptySet()
+                        val hit = itemBoundsMap.entries.firstOrNull { (pkg, bounds) ->
+                            pkg in currentPagePkgs && bounds.contains(offset)
                         } ?: return@detectDragGesturesAfterLongPress
-                        val fromPage =
-                            pages.indexOfFirst { p -> p.apps.any { it.packageName == hit.key } }
-                        if (fromPage < 0) return@detectDragGesturesAfterLongPress
                         draggingPkg = hit.key
-                        draggingFromPage = fromPage
+                        draggingFromPage = currentPageIdx
+                        dragTargetPage = null
                         dragPosition = offset
                         isEditMode = true
                     },
@@ -333,14 +410,18 @@ fun LauncherScreen() {
 
                         // ページエッジスクロール（左右端 80px で自動ページ切り替え）
                         val now = System.currentTimeMillis()
-                        if (now - lastPageScrollMs > 700L) {
+                        if (now - lastPageScrollMs > 1200L) {
                             val cp = pagerState.currentPage
                             when {
                                 dragPosition.x < 80f && cp > 0 -> {
+                                    lastPageScrollMs = now
+                                    dragTargetPage = cp - 1
                                     coroutineScope.launch { pagerState.animateScrollToPage(cp - 1) }
                                 }
 
                                 dragPosition.x > screenWidthPx - 80f && cp < pages.size - 1 -> {
+                                    lastPageScrollMs = now
+                                    dragTargetPage = cp + 1
                                     coroutineScope.launch { pagerState.animateScrollToPage(cp + 1) }
                                 }
                             }
@@ -372,7 +453,8 @@ fun LauncherScreen() {
                     onDragEnd = {
                         val curPkg = draggingPkg
                         val fromPage = draggingFromPage
-                        val toPage = pagerState.currentPage
+                        // アニメーション未完了でも意図したページへ移動できるよう dragTargetPage を優先
+                        val toPage = dragTargetPage ?: pagerState.currentPage
                         // 別ページへのドロップ → アプリを移動
                         if (curPkg != null && fromPage != null && fromPage != toPage) {
                             val src = pages.getOrNull(fromPage)
@@ -386,19 +468,21 @@ fun LauncherScreen() {
                         }
                         draggingPkg = null
                         draggingFromPage = null
+                        dragTargetPage = null
                         dragPosition = Offset.Zero
                         saveCurrent()
                     },
                     onDragCancel = {
                         draggingPkg = null
                         draggingFromPage = null
+                        dragTargetPage = null
                         dragPosition = Offset.Zero
                     }
                 )
             }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Spacer(modifier = Modifier.height(statusBarPad + 52.dp))
+            Spacer(modifier = Modifier.height(statusBarPad + 140.dp))
 
             // ── HorizontalPager
             // ★ ドラッグ中はユーザーによるスワイプを無効化。
@@ -410,36 +494,46 @@ fun LauncherScreen() {
                     modifier = Modifier.weight(1f)
                 ) { pageIndex ->
                     val page = pages.getOrNull(pageIndex) ?: return@HorizontalPager
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp
-                        )
-                    ) {
-                        itemsIndexed(
-                            items = page.apps,
-                            key = { _, app -> app.packageName }
-                        ) { _, app ->
-                            AppTile(
-                                app = app,
-                                isDragging = draggingPkg == app.packageName,
-                                isEditMode = isEditMode,
-                                onDelete = { page.apps.remove(app); saveCurrent() },
-                                onTap = {
-                                    if (isEditMode) {
-                                        isEditMode = false
-                                    } else {
-                                        context.packageManager
-                                            .getLaunchIntentForPackage(app.packageName)
-                                            ?.let { context.startActivity(it) }
-                                    }
-                                },
-                                // bounds 追跡のみ。ドラッグジェスチャーは最上位 Box が担当
-                                modifier = Modifier.onGloballyPositioned { coords ->
-                                    itemBoundsMap[app.packageName] = coords.boundsInRoot()
-                                }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = themeGradient(Color(page.color.toInt()).copy(alpha = 1f))
+                                )
                             )
+                    ) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp
+                            )
+                        ) {
+                            itemsIndexed(
+                                items = page.apps,
+                                key = { _, app -> app.packageName }
+                            ) { _, app ->
+                                AppTile(
+                                    app = app,
+                                    isDragging = draggingPkg == app.packageName,
+                                    isEditMode = isEditMode,
+                                    onDelete = { page.apps.remove(app); saveCurrent() },
+                                    onTap = {
+                                        if (isEditMode) {
+                                            isEditMode = false
+                                        } else {
+                                            context.packageManager
+                                                .getLaunchIntentForPackage(app.packageName)
+                                                ?.let { context.startActivity(it) }
+                                        }
+                                    },
+                                    // bounds 追跡のみ。ドラッグジェスチャーは最上位 Box が担当
+                                    modifier = Modifier.onGloballyPositioned { coords ->
+                                        itemBoundsMap[app.packageName] = coords.boundsInRoot()
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -454,62 +548,7 @@ fun LauncherScreen() {
                 }
             }
 
-            // ── ページインジケーター ─────────────────────────────────────────
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp, bottom = navBarPad + 10.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                pages.forEachIndexed { index, _ ->
-                    val isCurrent = pagerState.currentPage == index
-                    Box(modifier = Modifier.padding(horizontal = 5.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(if (isCurrent) 10.dp else 7.dp)
-                                .background(
-                                    color = if (isCurrent) Color.White else Color.White.copy(alpha = 0.35f),
-                                    shape = CircleShape
-                                )
-                                .clickable {
-                                    coroutineScope.launch { pagerState.animateScrollToPage(index) }
-                                }
-                        )
-                        if (isEditMode && pages.size > 1) {
-                            Box(
-                                modifier = Modifier
-                                    .size(13.dp)
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 5.dp, y = (-5).dp)
-                                    .background(Color(0xFFD32F2F), CircleShape)
-                                    .border(1.dp, Color.White, CircleShape)
-                                    .clickable { deletePageTarget = index },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("×", color = Color.White, fontSize = 7.sp, lineHeight = 7.sp)
-                            }
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Box(
-                    modifier = Modifier
-                        .size(24.dp)
-                        .background(Color.White.copy(alpha = 0.20f), CircleShape)
-                        .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
-                        .clickable {
-                            val newPage = PageData("ページ ${pages.size + 1}")
-                            pages.add(newPage)
-                            val newIdx = pages.size - 1
-                            coroutineScope.launch { pagerState.animateScrollToPage(newIdx) }
-                            saveCurrent()
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("+", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+            Spacer(modifier = Modifier.height(navBarPad + 8.dp))
         }
 
         // ── ページ名編集中: 枠外タップでキーボードを閉じるオーバーレイ ───
@@ -534,111 +573,145 @@ fun LauncherScreen() {
                 .background(Color.Black.copy(alpha = if (isEditMode) 0.70f else 0.35f))
                 .align(Alignment.TopCenter)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    if (editingPageName && pages.isNotEmpty()) {
-                        BasicTextField(
-                            value = pageNameInput,
-                            onValueChange = { pageNameInput = it },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(focusRequester),
-                            singleLine = true,
-                            textStyle = TextStyle(
-                                color = Color.White,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(onDone = {
-                                val t = pageNameInput.trim()
-                                if (t.isNotEmpty()) {
-                                    pages[pagerState.currentPage].name = t
-                                    saveCurrent()
-                                }
-                                editingPageName = false
-                            }),
-                            decorationBox = { inner ->
-                                Box {
-                                    if (pageNameInput.isEmpty()) {
-                                        Text(
-                                            "ページ名を入力",
-                                            color = Color.White.copy(alpha = 0.45f),
-                                            fontSize = 15.sp
-                                        )
-                                    }
-                                    inner()
-                                }
-                            }
-                        )
-                    } else {
-                        Column {
-                            val currentName = pages.getOrNull(pagerState.currentPage)?.name ?: ""
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = currentName,
-                                    color = Color.White,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.clickable {
-                                        if (pages.isNotEmpty()) {
-                                            pageNameInput = pages[pagerState.currentPage].name
-                                            editingPageName = true
-                                        }
-                                    }
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "✎",
-                                    color = Color.White.copy(alpha = 0.45f),
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.clickable {
-                                        if (pages.isNotEmpty()) {
-                                            pageNameInput = pages[pagerState.currentPage].name
-                                            editingPageName = true
-                                        }
-                                    }
-                                )
-                            }
-                            if (isEditMode) {
-                                Text(
-                                    text = "✕タップで削除 / タイルタップで終了",
-                                    color = Color.White.copy(alpha = 0.55f),
-                                    fontSize = 10.sp
-                                )
-                            }
-                        }
-                    }
+            Column {
+                // ── タイトル行
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 14.dp, top = 10.dp, bottom = 2.dp),
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Text(
+                        text = "あめらん",
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "- Amaging Launcher -",
+                        color = Color.White.copy(alpha = 0.65f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal
+                    )
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.height(5.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // ── アクション行（ボタン類）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // ── 左グループ: リセット ＋ タブ移動ボタン
                     Box(
                         modifier = Modifier
-                            .background(
-                                color = Color(0xFFD32F2F).copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(20.dp)
-                            )
+                            .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
                             .clickable { showResetDialog = true }
                             .padding(horizontal = 12.dp, vertical = 5.dp),
                         contentAlignment = Alignment.Center
                     ) {
+                        Text("リセット", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // タブを掴む（トグル）
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (isTabMoveMode) Color.White else Color.White.copy(alpha = 0.15f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+                            .clickable { isTabMoveMode = !isTabMoveMode }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            "リセット",
-                            color = Color.White,
-                            fontSize = 12.sp,
+                            if (isTabMoveMode) "タブを離す" else "タブを掴む",
+                            color = if (isTabMoveMode) Color(0xFF1A1A2E) else Color.White,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // ◀ 左へ移動
+                    val canMoveLeft = isTabMoveMode && pagerState.currentPage > 0
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (canMoveLeft) Color.White.copy(alpha = 0.20f)
+                                else Color.White.copy(alpha = 0.05f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .border(
+                                1.dp,
+                                if (canMoveLeft) Color.White.copy(alpha = 0.5f)
+                                else Color.White.copy(alpha = 0.10f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .clickable(enabled = canMoveLeft) {
+                                val idx = pagerState.currentPage
+                                val tab = pages.removeAt(idx)
+                                pages.add(idx - 1, tab)
+                                coroutineScope.launch { pagerState.animateScrollToPage(idx - 1) }
+                                saveCurrent()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "◀",
+                            color = if (canMoveLeft) Color.White else Color.White.copy(alpha = 0.20f),
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // ▶ 右へ移動
+                    val canMoveRight = isTabMoveMode && pagerState.currentPage < pages.size - 1
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (canMoveRight) Color.White.copy(alpha = 0.20f)
+                                else Color.White.copy(alpha = 0.05f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .border(
+                                1.dp,
+                                if (canMoveRight) Color.White.copy(alpha = 0.5f)
+                                else Color.White.copy(alpha = 0.10f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .clickable(enabled = canMoveRight) {
+                                val idx = pagerState.currentPage
+                                val tab = pages.removeAt(idx)
+                                pages.add(idx + 1, tab)
+                                coroutineScope.launch { pagerState.animateScrollToPage(idx + 1) }
+                                saveCurrent()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "▶",
+                            color = if (canMoveRight) Color.White else Color.White.copy(alpha = 0.20f),
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // ── 右グループ: 編集モード時のヒント＋完了 ＋ カラーパレット
                     if (isEditMode) {
                         Box(
                             modifier = Modifier
@@ -647,13 +720,200 @@ fun LauncherScreen() {
                                 .padding(horizontal = 14.dp, vertical = 5.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                "完了",
-                                color = Color(0xFF1A1A2E),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text("完了", color = Color(0xFF1A1A2E), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(
+                                Brush.sweepGradient(
+                                    listOf(
+                                        Color(0xFF8B2020.toInt()), Color(0xFF8B6914.toInt()),
+                                        Color(0xFF27AE60.toInt()), Color(0xFF1E6091.toInt()),
+                                        Color(0xFF5E35B1.toInt()), Color(0xFF8B2020.toInt())
+                                    )
+                                ),
+                                CircleShape
+                            )
+                            .border(1.5.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                            .clickable { showColorPicker = true }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(5.dp))
+
+                // ── タブ行
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 8.dp, end = 8.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                LazyRow(
+                    state = tabListState,
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(pages.size, key = { it }) { index ->
+                        val page = pages[index]
+                        val isActive = pagerState.currentPage == index
+                        val pageColor = Color(page.color.toInt())
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (isActive) pageColor.copy(alpha = 0.85f)
+                                    else pageColor.copy(alpha = 0.35f),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isActive) Color.White.copy(alpha = 0.60f)
+                                    else Color.White.copy(alpha = 0.20f),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    if (isActive && !editingPageName) {
+                                        // アクティブなタブをタップ → ページ名を編集
+                                        pageNameInput = page.name
+                                        editingPageName = true
+                                    } else if (!isActive) {
+                                        // 別タブをタップ → ページ切り替え（編集中なら破棄）
+                                        keyboardController?.hide()
+                                        editingPageName = false
+                                        coroutineScope.launch { pagerState.animateScrollToPage(index) }
+                                    }
+                                }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                        ) {
+                            if (isActive && editingPageName) {
+                                BasicTextField(
+                                    value = pageNameInput,
+                                    onValueChange = { pageNameInput = it },
+                                    modifier = Modifier.focusRequester(focusRequester),
+                                    singleLine = true,
+                                    textStyle = TextStyle(
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                    keyboardActions = KeyboardActions(onDone = {
+                                        val t = pageNameInput.trim()
+                                        if (t.isNotEmpty()) {
+                                            pages[pagerState.currentPage].name = t
+                                            saveCurrent()
+                                        }
+                                        keyboardController?.hide()
+                                        editingPageName = false
+                                    }),
+                                    decorationBox = { inner ->
+                                        Box {
+                                            if (pageNameInput.isEmpty()) {
+                                                Text(
+                                                    "ページ名を入力",
+                                                    color = Color.White.copy(alpha = 0.45f),
+                                                    fontSize = 13.sp
+                                                )
+                                            }
+                                            inner()
+                                        }
+                                    }
+                                )
+                            } else {
+                                Text(
+                                    text = page.name,
+                                    color = if (isActive) Color.White else Color.White.copy(alpha = 0.55f),
+                                    fontSize = 13.sp,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // 編集モード時の × バッジ
+                            if (isEditMode && pages.size > 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 8.dp, y = (-8).dp)
+                                        .zIndex(10f)
+                                        .background(Color(0xFFD32F2F), CircleShape)
+                                        .border(1.dp, Color.White, CircleShape)
+                                        .clickable { deletePageTarget = index },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("×", color = Color.White, fontSize = 8.sp, lineHeight = 8.sp)
+                                }
+                            }
+                        }
+                    }
+
+                }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // ── ページ追加ボタン（+）
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                            .clickable {
+                                val newPage = PageData("ページ ${pages.size + 1}")
+                                pages.add(newPage)
+                                val newIdx = pages.size - 1
+                                coroutineScope.launch { pagerState.animateScrollToPage(newIdx) }
+                                saveCurrent()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("+", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // ── ページ削除ボタン（-）
+                    val canDelete = pages.size > 1
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .background(
+                                if (canDelete) Color.White.copy(alpha = 0.15f)
+                                else Color.White.copy(alpha = 0.05f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .border(
+                                1.dp,
+                                if (canDelete) Color.White.copy(alpha = 0.4f)
+                                else Color.White.copy(alpha = 0.10f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .clickable(enabled = canDelete) {
+                                val currentIdx = pagerState.currentPage
+                                val currentApps = pages.getOrNull(currentIdx)?.apps
+                                if (currentApps.isNullOrEmpty()) {
+                                    // アプリなし → 確認なしで即削除
+                                    pages.removeAt(currentIdx)
+                                    val safePage = (currentIdx - 1).coerceAtLeast(0)
+                                    coroutineScope.launch { pagerState.animateScrollToPage(safePage) }
+                                    saveCurrent()
+                                } else {
+                                    // アプリあり → 確認ダイアログ
+                                    deletePageTarget = currentIdx
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "−",
+                            color = if (canDelete) Color.White else Color.White.copy(alpha = 0.20f),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
