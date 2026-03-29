@@ -39,8 +39,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -596,6 +598,11 @@ fun LauncherScreen(pinTrigger: Int = 0) {
                     modifier = Modifier.weight(1f)
                 ) { pageIndex ->
                     val page = pages.getOrNull(pageIndex) ?: return@HorizontalPager
+                    val gridState = rememberLazyGridState()
+                    val isCurrentPage = pagerState.currentPage == pageIndex
+                    LaunchedEffect(isCurrentPage) {
+                        if (isCurrentPage) gridState.scrollToItem(0)
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -607,6 +614,7 @@ fun LauncherScreen(pinTrigger: Int = 0) {
                     ) {
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(3),
+                            state = gridState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
                                 start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp
