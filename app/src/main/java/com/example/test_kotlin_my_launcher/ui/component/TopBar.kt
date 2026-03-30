@@ -96,7 +96,7 @@ fun TopBar(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "- Amaging Launcher -",
+                        text = "- Amazing Launcher -",
                         color = Color.White.copy(alpha = 0.65f),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Normal

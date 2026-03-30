@@ -1,6 +1,6 @@
 # あめらん 開発記録
 
-> **Amaging Launcher** — Android 向けホームアプリ
+> **Amazing Launcher** — Android 向けホームアプリ
 > Windows の「cLaunch」を参考に、タブでアプリをカテゴリ分けして管理するランチャーアプリ。
 
 ---
@@ -662,11 +662,11 @@ AlertDialog(
 トップバー最上段にアプリ名とリロードボタンを表示。
 
 ```
-あめらん  - Amaging Launcher -          [↺]
+あめらん  - Amazing Launcher -          [↺]
 ```
 
 - 「あめらん」: 24sp・Bold・文字間隔 2sp（主役）
-- 「- Amaging Launcher -」: 11sp・65%白・下端揃え
+- 「- Amazing Launcher -」: 11sp・65%白・下端揃え
 - `[↺]`: 右端に 36dp 円形アイコンボタン（`Icons.Default.Refresh`）
 
 **レイアウト**: `Arrangement.SpaceBetween` で左グループ（タイトル）と右アイコンを両端配置。
@@ -680,7 +680,7 @@ Row(
     Row(verticalAlignment = Alignment.Bottom) {
         Text("あめらん", fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
         Spacer(Modifier.width(10.dp))
-        Text("- Amaging Launcher -", fontSize = 11.sp, color = Color.White.copy(alpha = 0.65f))
+        Text("- Amazing Launcher -", fontSize = 11.sp, color = Color.White.copy(alpha = 0.65f))
     }
     Box(
         modifier = Modifier
@@ -954,7 +954,7 @@ Box（画面全体・ドラッグジェスチャー担当）
 │
 ├─ Box（トップバー・Alignment.TopCenter）
 │   └─ Column
-│       ├─ Row（タイトル行）   ← 左: "あめらん - Amaging Launcher -" / 右: ↺ リロードボタン
+│       ├─ Row（タイトル行）   ← 左: "あめらん - Amazing Launcher -" / 右: ↺ リロードボタン
 │       ├─ Spacer(5dp)
 │       ├─ Row（アクション行） ← リセット / タブを掴む / ◀ / ▶ / 完了 / 🎨
 │       ├─ Spacer(5dp)
