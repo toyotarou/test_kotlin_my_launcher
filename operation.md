@@ -1056,6 +1056,35 @@ done
 
 ---
 
+### ⚠️ 【必須・最重要】AndroidManifest.xml に `android:icon` を必ず書く
+
+**画像ファイルを配置しただけではアイコンは変わらない。**
+`AndroidManifest.xml` の `<application>` タグに以下の2属性を明示しないと、
+実機にインストールしてもデフォルトのシステムアイコンのままになる。
+
+```xml
+<application
+    android:allowBackup="true"
+    android:supportsRtl="true"
+    android:label="@string/app_name"
+    android:icon="@mipmap/ic_launcher"          <!-- ← これが必須 -->
+    android:roundIcon="@mipmap/ic_launcher_round"> <!-- ← これも必須 -->
+```
+
+**なぜ抜けやすいか**:
+Android Studio の `New → Image Asset` で画像生成すると自動で追加されるが、
+手動で画像を差し替えた場合や、プロジェクト初期設定でテンプレートによっては
+この属性が入らないことがある。
+
+**確認チェックリスト（アイコン変更後）**:
+- [ ] `AndroidManifest.xml` の `<application>` に `android:icon` がある
+- [ ] `AndroidManifest.xml` の `<application>` に `android:roundIcon` がある
+- [ ] `Build → Clean Project` → `Rebuild Project` を実施した
+- [ ] 実機で**アンインストールしてから再インストール**した（キャッシュ回避）
+
+> この属性の記載漏れは、新規デバイスへのインストール時に初めて発覚することが多い。
+> アイコンが変わらない場合は **まず Manifest を確認すること**。
+
 ---
 
 ## 12. ファイル分割アーキテクチャ
