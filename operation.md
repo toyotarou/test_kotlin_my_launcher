@@ -18,6 +18,7 @@
 9. [SharedPreferences のキー一覧](#9-sharedpreferences-のキー一覧)
 10. [UI 構造](#10-ui-構造)
 11. [アイコン・スプラッシュ画面の更新手順](#11-アイコンスプラッシュ画面の更新手順)
+12. [ファイル分割アーキテクチャ](#12-ファイル分割アーキテクチャ)
 
 ### セクション 7 サブ目次
 - 7-1 タブ UI
@@ -31,8 +32,10 @@
 - 7-9 アプリ名の変更
 - 7-10 ピン留めショートカット対応
 - 7-11 「ページ1へ戻す」バッジ
+- 7-12 画面縦固定
+- 7-13 ページ切り替え時の頭出し
 
-> 最終更新: 2026-03-28
+> 最終更新: 2026-03-30
 
 ---
 
@@ -142,6 +145,8 @@ dependencies {
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.MyLauncher.Splash">
 
             <!-- アプリ一覧から起動するための入口 -->
@@ -157,13 +162,21 @@ dependencies {
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
 
+            <!-- Chrome など「ホーム画面に追加」のショートカットピン留めを受け付ける -->
+            <intent-filter>
+                <action android:name="android.content.pm.action.CONFIRM_PIN_SHORTCUT" />
+            </intent-filter>
+
         </activity>
     </application>
 </manifest>
 ```
 
-> **ポイント**: `CATEGORY_HOME` + `CATEGORY_DEFAULT` の両方が必要。
-> これがないとホームアプリ候補として表示されない。
+> **ポイント**:
+> - `CATEGORY_HOME` + `CATEGORY_DEFAULT` の両方が必要（ホームアプリ候補として表示）。
+> - `android:screenOrientation="portrait"` で縦固定（横回転しなくなる）。
+> - `android:launchMode="singleTask"` でホームボタンで戻ったとき Activity を再生成しない。
+> - `CONFIRM_PIN_SHORTCUT` の intent-filter でピン留めショートカットを受け付ける。
 
 ### 3-4. スプラッシュテーマの設定
 
@@ -201,36 +214,60 @@ override fun onCreate(savedInstanceState: Bundle?) {
 
 ```
 test_kotlin_my_launcher/
-├── operation.md                        ← この文書
+├── operation.md                              ← この文書
 ├── app/
-│   ├── build.gradle.kts                ← 依存関係・SDK 設定
+│   ├── build.gradle.kts                      ← 依存関係・SDK 設定
 │   └── src/main/
-│       ├── AndroidManifest.xml         ← ホームアプリ登録
+│       ├── AndroidManifest.xml               ← ホームアプリ登録・縦固定
 │       ├── java/com/example/test_kotlin_my_launcher/
-│       │   └── MainActivity.kt         ← アプリ全コード（1 ファイル構成）
+│       │   │
+│       │   ├── MainActivity.kt               ← Activity だけ（OS の窓口）
+│       │   │
+│       │   ├── data/
+│       │   │   ├── model/
+│       │   │   │   ├── AppInfo.kt            ← AppInfo data class
+│       │   │   │   └── PageData.kt           ← PageData, SavedPageData
+│       │   │   └── repository/
+│       │   │       └── LauncherRepository.kt ← SharedPrefs 読み書き
+│       │   │
+│       │   └── ui/
+│       │       ├── theme/
+│       │       │   └── LauncherTheme.kt      ← カラーパレット・グラデーション
+│       │       ├── component/
+│       │       │   ├── AppTile.kt            ← アプリタイル部品
+│       │       │   ├── TopBar.kt             ← ヘッダー全体（タブ行含む）
+│       │       │   └── DragGhost.kt          ← ドラッグ中のゴースト
+│       │       ├── dialog/
+│       │       │   ├── ResetDialog.kt
+│       │       │   ├── DeletePageDialog.kt
+│       │       │   └── ColorPickerDialog.kt
+│       │       └── screen/
+│       │           └── LauncherScreen.kt     ← 画面全体の状態管理
+│       │
 │       └── res/
 │           ├── values/
-│           │   ├── strings.xml         ← app_name = "あめらん"
+│           │   ├── strings.xml               ← app_name = "あめらん"
 │           │   ├── colors.xml
-│           │   └── themes.xml          ← スプラッシュテーマ含む
+│           │   └── themes.xml                ← スプラッシュテーマ含む
 │           ├── values-night/
-│           │   └── themes.xml          ← ダークモード用テーマ
+│           │   └── themes.xml                ← ダークモード用テーマ
 │           ├── drawable/
 │           │   ├── ic_launcher_background.xml
 │           │   └── ic_launcher_foreground.xml
 │           ├── mipmap-anydpi-v26/
-│           │   ├── ic_launcher.xml         ← アダプティブアイコン定義
+│           │   ├── ic_launcher.xml           ← アダプティブアイコン定義
 │           │   └── ic_launcher_round.xml
 │           └── mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/
-│               ├── ic_launcher.png          ← ランチャーアイコン
+│               ├── ic_launcher.png
 │               ├── ic_launcher_foreground.png
 │               ├── ic_launcher_background.png
 │               ├── ic_launcher_fg.png
 │               └── ic_launcher_monochrome.png
 ```
 
-> **ポイント**: Kotlin + Compose の場合、コードは `MainActivity.kt` 1 ファイルに
-> すべて書く構成でも問題なく動く。大規模になれば分割を検討する。
+> **ポイント**: レイヤードアーキテクチャで分割している。
+> `data/` → `ui/theme, component, dialog` → `ui/screen` → `MainActivity` の順に依存する。
+> 詳細は [セクション 12](#12-ファイル分割アーキテクチャ) を参照。
 
 ---
 
@@ -730,6 +767,7 @@ if (app.shortcutId != null) {
 
 ### 7-11. 「ページ1へ戻す」バッジ（AppTile 左上）
 
+
 ページ 2 以降にいるとき、編集モード中のアプリタイル左上に青い「↩」バッジを表示。
 タップするとそのアプリをページ 1 の末尾に移動する。
 
@@ -765,6 +803,71 @@ if (onMoveToFirst != null) {
         Text("↩", color = Color.White, fontSize = 10.sp)
     }
 }
+```
+
+### 7-12. 画面縦固定
+
+端末を横向きにしてもレイアウトが崩れないよう、縦固定にする。
+
+**設定箇所**: `AndroidManifest.xml` の `<activity>` 要素に 1 行追加するだけ。
+
+```xml
+<activity
+    android:name=".MainActivity"
+    android:screenOrientation="portrait"   ← この行を追加
+    ...>
+```
+
+> **Kotlin コードの変更は不要**。Manifest だけで完結する。
+
+---
+
+### 7-13. ページ切り替え時のグリッド頭出し
+
+別のタブに切り替えたとき、そのページが途中までスクロールされていても
+自動的に先頭（一番上）へ戻るようにする。
+
+**実装ポイント**:
+- `LazyVerticalGrid` に `rememberLazyGridState()` を渡して状態を持たせる
+- ページがアクティブになった（`isCurrentPage == true`）タイミングで `scrollToItem(0)` を呼ぶ
+
+**コード（`LauncherScreen.kt` の HorizontalPager ブロック内）**:
+
+```kotlin
+HorizontalPager(state = pagerState, ...) { pageIndex ->
+    val page = pages.getOrNull(pageIndex) ?: return@HorizontalPager
+
+    // ① ページごとに独立したスクロール状態を生成
+    val gridState = rememberLazyGridState()
+
+    // ② このページが現在表示中かを監視
+    val isCurrentPage = pagerState.currentPage == pageIndex
+
+    // ③ アクティブになった瞬間に先頭へスクロール
+    LaunchedEffect(isCurrentPage) {
+        if (isCurrentPage) gridState.scrollToItem(0)
+    }
+
+    Box(...) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            state = gridState,   // ← ④ 状態を渡す
+            ...
+        ) { ... }
+    }
+}
+```
+
+**なぜ `rememberLazyGridState()` が必要か**:
+- `LazyVerticalGrid` はデフォルトでは内部に状態を持つが、外から `scrollToItem()` を
+  呼ぶには `LazyGridState` のインスタンスが必要。
+- `HorizontalPager` の各ページは独立した Composable なので、
+  それぞれ `remember` で別々の `LazyGridState` が生成される。
+
+**追加した import**:
+```kotlin
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 ```
 
 ---
@@ -953,4 +1056,302 @@ done
 
 ---
 
-*最終更新: 2026-03-28（7-10 ピン留めショートカット対応、7-11 ページ1へ戻すバッジ追加、7-8 isRefreshing 追記、AppInfo/SharedPreferences のデータ設計更新）*
+---
+
+## 12. ファイル分割アーキテクチャ
+
+当初は `MainActivity.kt` 1 ファイルにすべて書いていたが、
+コードが肥大化したためレイヤードアーキテクチャに基づいて分割した。
+
+### 12-1. 分割の基本思想
+
+**「役割ごとにファイルを分ける」**
+
+| レイヤー | フォルダ | 何を書くか |
+|---|---|---|
+| データ定義 | `data/model/` | データの「形」（data class）|
+| データ保存 | `data/repository/` | SharedPreferences の読み書き |
+| テーマ定数 | `ui/theme/` | 色・スタイルの定数・関数 |
+| UI 部品 | `ui/component/` | 再利用できる小さな Composable |
+| ダイアログ | `ui/dialog/` | AlertDialog を返す Composable |
+| 画面 | `ui/screen/` | 状態管理・レイアウト全体 |
+| Activity | ルート直下 | OS との窓口（最小限）|
+
+**依存の方向（下が上を知らない）**:
+
+```
+MainActivity
+    └── ui/screen/LauncherScreen
+            ├── ui/component/AppTile, TopBar, DragGhost
+            ├── ui/dialog/ResetDialog, DeletePageDialog, ColorPickerDialog
+            ├── ui/theme/LauncherTheme
+            ├── data/repository/LauncherRepository
+            └── data/model/AppInfo, PageData
+```
+
+### 12-2. 各ファイルの役割と package 宣言
+
+Kotlin はファイルの先頭に `package` を書く。
+フォルダ構造と package 名は一致させるのがルール。
+
+| ファイル | package |
+|---|---|
+| `MainActivity.kt` | `com.example.test_kotlin_my_launcher` |
+| `data/model/AppInfo.kt` | `com.example.test_kotlin_my_launcher.data.model` |
+| `data/model/PageData.kt` | `com.example.test_kotlin_my_launcher.data.model` |
+| `data/repository/LauncherRepository.kt` | `com.example.test_kotlin_my_launcher.data.repository` |
+| `ui/theme/LauncherTheme.kt` | `com.example.test_kotlin_my_launcher.ui.theme` |
+| `ui/component/AppTile.kt` | `com.example.test_kotlin_my_launcher.ui.component` |
+| `ui/component/TopBar.kt` | `com.example.test_kotlin_my_launcher.ui.component` |
+| `ui/component/DragGhost.kt` | `com.example.test_kotlin_my_launcher.ui.component` |
+| `ui/dialog/ResetDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
+| `ui/dialog/DeletePageDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
+| `ui/dialog/ColorPickerDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
+| `ui/screen/LauncherScreen.kt` | `com.example.test_kotlin_my_launcher.ui.screen` |
+
+### 12-3. 別ファイルのものを使う方法（import）
+
+他のファイルに定義されたクラスや関数を使うには `import` 文が必要。
+
+```kotlin
+// 例: LauncherScreen.kt から AppTile を使いたいとき
+import com.example.test_kotlin_my_launcher.ui.component.AppTile
+
+// パッケージ内の全部を一括 import する場合
+import com.example.test_kotlin_my_launcher.data.model.*
+```
+
+> Android Studio では `Alt + Enter`（Mac: `Option + Enter`）で
+> 未解決の参照を自動 import できる。
+
+### 12-4. 各ファイルの内容
+
+#### `data/model/AppInfo.kt`
+
+```kotlin
+package com.example.test_kotlin_my_launcher.data.model
+
+import android.graphics.Bitmap
+
+data class AppInfo(
+    val packageName: String,
+    val label: String,
+    val icon: Bitmap,
+    val shortcutId: String? = null
+) {
+    val uniqueKey: String
+        get() = if (shortcutId != null) "s:$packageName/$shortcutId" else packageName
+}
+```
+
+#### `data/model/PageData.kt`
+
+```kotlin
+package com.example.test_kotlin_my_launcher.data.model
+
+import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.example.test_kotlin_my_launcher.ui.theme.DEFAULT_PAGE_COLOR
+
+data class SavedPageData(val name: String, val appOrder: List<String>, val color: Long)
+
+class PageData(name: String, color: Long = DEFAULT_PAGE_COLOR) {
+    var name: String by mutableStateOf(name)
+    var color: Long by mutableStateOf(color)
+    val apps: SnapshotStateList<AppInfo> = mutableStateListOf()
+}
+```
+
+> **注意**: `PageData` は `by mutableStateOf` を使うため `data class` にできない。
+> `mutableStateOf` は Compose の状態管理システムに登録するための委譲プロパティ。
+
+#### `data/repository/LauncherRepository.kt`
+
+SharedPreferences の読み書きを 3 つのトップレベル関数としてまとめたファイル。
+クラスは不要（Kotlin はクラス外に関数を書ける）。
+
+```kotlin
+package com.example.test_kotlin_my_launcher.data.repository
+
+fun loadSavedPages(context: Context): List<SavedPageData> { ... }
+fun saveAllPages(context: Context, pages: List<PageData>) { ... }
+fun clearAllSavedData(context: Context) { ... }
+```
+
+> **Kotlin の特徴**: Java と違い、関数はクラスの中に書かなくてもよい。
+> ファイル直下に書いた関数は「トップレベル関数」と呼ぶ。
+
+#### `ui/theme/LauncherTheme.kt`
+
+色の定数とグラデーション生成関数。UI コンポーネントから参照される。
+
+```kotlin
+package com.example.test_kotlin_my_launcher.ui.theme
+
+const val DEFAULT_PAGE_COLOR = 0xFF3D5A8AL   // Long リテラル
+
+val themeColorPalette: List<Long> = listOf( ... )
+
+fun themeGradient(base: Color): List<Color> { ... }
+```
+
+#### `ui/component/AppTile.kt`
+
+アプリ 1 タイル分の Composable。引数でデータと操作ラムダを受け取る。
+
+```kotlin
+@Composable
+fun AppTile(
+    app: AppInfo,
+    isDragging: Boolean,
+    isEditMode: Boolean,
+    onDelete: () -> Unit,
+    onTap: () -> Unit,
+    onMoveToFirst: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) { ... }
+```
+
+> **Composable の設計原則**:
+> - データ（`AppInfo`）と操作（`onDelete` など）を引数で受け取る
+> - 自分では状態を持たない（ステートレス設計）
+> - `modifier` は最後の引数にして外から追加できるようにする
+
+#### `ui/component/TopBar.kt`
+
+ヘッダー全体（タイトル行・アクション行・タブ行）を 1 Composable にまとめたファイル。
+多くのコールバックを引数で受け取る設計。
+
+```kotlin
+@Composable
+fun TopBar(
+    // 表示に必要なデータ
+    statusBarPad: Dp,
+    isEditMode: Boolean,
+    pages: List<PageData>,
+    currentPage: Int,
+    // ...
+    // 操作ラムダ（イベントハンドラ）
+    onRefreshClick: () -> Unit,
+    onResetClick: () -> Unit,
+    onTabClick: (index: Int) -> Unit,
+    // ...
+    modifier: Modifier = Modifier,
+) { ... }
+```
+
+#### `ui/component/DragGhost.kt`
+
+ドラッグ中に指に追従するゴーストアイコン。
+
+```kotlin
+@Composable
+fun DragGhost(
+    draggedApp: AppInfo,
+    dragPosition: Offset
+) {
+    val ghostSize = 80.dp
+    Column(
+        modifier = Modifier
+            .size(ghostSize)
+            .offset {
+                IntOffset(
+                    (dragPosition.x - ghostSize.toPx() / 2).roundToInt(),
+                    (dragPosition.y - ghostSize.toPx() / 2).roundToInt()
+                )
+            }
+            .zIndex(100f)
+            .background(Color.White.copy(alpha = 0.92f), RoundedCornerShape(18.dp)),
+        ...
+    ) { ... }
+}
+```
+
+> **`offset { IntOffset(...) }` の書き方**:
+> `offset` の引数ラムダは `Density` スコープで実行されるため、
+> `ghostSize.toPx()` のように `Dp → px` 変換が書ける。
+
+#### `ui/dialog/` の 3 ファイル
+
+各ダイアログを独立した Composable に切り出したもの。
+`AlertDialog` の引数に必要な情報をパラメータとして受け取る。
+
+```kotlin
+// ResetDialog.kt
+@Composable
+fun ResetDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) { ... }
+
+// DeletePageDialog.kt
+@Composable
+fun DeletePageDialog(
+    pageName: String, appCount: Int,
+    onConfirm: () -> Unit, onDismiss: () -> Unit
+) { ... }
+
+// ColorPickerDialog.kt
+@Composable
+fun ColorPickerDialog(
+    pageName: String, currentColor: Long,
+    onColorSelected: (Long) -> Unit, onDismiss: () -> Unit
+) { ... }
+```
+
+#### `ui/screen/LauncherScreen.kt`
+
+画面全体の状態（`isEditMode`、`draggingPkg` など）を管理するファイル。
+分割後もこのファイルは長い（約 300 行）が、それは状態管理の責務が集まっているため。
+
+- `var isEditMode by remember { mutableStateOf(false) }` などの状態変数宣言
+- `LaunchedEffect` によるデータ読み込み
+- ドラッグジェスチャーのロジック
+- ダイアログ・TopBar・HorizontalPager の呼び出し（実装ではなく組み合わせ）
+
+#### `MainActivity.kt`（分割後）
+
+```kotlin
+package com.example.test_kotlin_my_launcher
+
+class MainActivity : ComponentActivity() {
+    private val _pinTrigger = mutableIntStateOf(0)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        acceptPinShortcut(intent)
+        setContent { MaterialTheme { LauncherScreen(pinTrigger = _pinTrigger.intValue) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        acceptPinShortcut(intent)
+    }
+
+    private fun acceptPinShortcut(intent: Intent?) { ... }
+}
+```
+
+Activity が知るのは `LauncherScreen` だけ。他の Composable は知らない。
+
+### 12-5. ファイル作成時のチェックリスト
+
+新しいファイルを追加するときの手順：
+
+1. **フォルダを作成**（Android Studio のプロジェクトビューで右クリック → New → Package）
+2. **ファイルを作成**（New → Kotlin Class/File）
+3. **先頭に `package` 宣言を書く**（フォルダ構造と一致させる）
+4. **使いたい側で `import` する**（`Alt + Enter` で自動補完）
+5. **ビルドして確認**（`./gradlew compileDebugKotlin`）
+
+### 12-6. よくある分割の失敗
+
+| 失敗 | 原因 | 対処 |
+|---|---|---|
+| `Unresolved reference` エラー | import が足りない | `Alt + Enter` で自動 import |
+| `package` が間違っている | フォルダ名とpackage名が不一致 | ファイル先頭の `package` をフォルダ構造に合わせる |
+| 循環参照 | A が B を import、B が A を import | 依存方向を見直す（data ← ui の方向を守る） |
+| `DEFAULT_PAGE_COLOR` が未解決 | `PageData.kt` が `LauncherTheme.kt` を import する前に書いた | import 文を追加する |
+
+---
+
+*最終更新: 2026-03-30（7-12 画面縦固定、7-13 ページ頭出し追加、ファイル構成を多ファイル構成に更新、セクション 12 追加）*
