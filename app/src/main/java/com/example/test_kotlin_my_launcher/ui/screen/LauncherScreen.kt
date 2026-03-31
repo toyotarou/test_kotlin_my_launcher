@@ -67,6 +67,7 @@ import com.example.test_kotlin_my_launcher.ui.component.TopBar
 import com.example.test_kotlin_my_launcher.ui.dialog.ColorPickerDialog
 import com.example.test_kotlin_my_launcher.ui.dialog.DeletePageDialog
 import com.example.test_kotlin_my_launcher.ui.dialog.ResetDialog
+import com.example.test_kotlin_my_launcher.ui.dialog.SearchNotFoundDialog
 import com.example.test_kotlin_my_launcher.ui.theme.themeGradient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -203,6 +204,11 @@ fun LauncherScreen(pinTrigger: Int = 0) {
     var lastPageScrollMs by remember { mutableLongStateOf(0L) }
     var showColorPicker by remember { mutableStateOf(false) }
     var isTabMoveMode by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showSearchNotFound by remember { mutableStateOf(false) }
+    var searchLastQuery by remember { mutableStateOf("") }
+    // (pageIndex, itemIndex) — ページ遷移後にグリッドスクロールするターゲット
+    var searchScrollTarget by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -221,6 +227,23 @@ fun LauncherScreen(pinTrigger: Int = 0) {
 
     fun saveCurrent() {
         coroutineScope.launch(Dispatchers.IO) { saveAllPages(context, pages) }
+    }
+
+    fun onSearchSubmit() {
+        val query = searchQuery.trim()
+        searchQuery = ""
+        keyboardController?.hide()
+        if (query.isBlank()) return
+        for ((pageIdx, page) in pages.withIndex()) {
+            val appIdx = page.apps.indexOfFirst { it.label.contains(query, ignoreCase = true) }
+            if (appIdx >= 0) {
+                coroutineScope.launch { pagerState.animateScrollToPage(pageIdx) }
+                searchScrollTarget = Pair(pageIdx, appIdx)
+                return
+            }
+        }
+        searchLastQuery = query
+        showSearchNotFound = true
     }
 
     BackHandler(enabled = isEditMode || editingPageName) {
@@ -263,6 +286,13 @@ fun LauncherScreen(pinTrigger: Int = 0) {
                 deletePageTarget = null
             },
             onDismiss = { deletePageTarget = null }
+        )
+    }
+
+    if (showSearchNotFound) {
+        SearchNotFoundDialog(
+            query = searchLastQuery,
+            onDismiss = { showSearchNotFound = false }
         )
     }
 
@@ -370,7 +400,7 @@ fun LauncherScreen(pinTrigger: Int = 0) {
             }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Spacer(modifier = Modifier.height(statusBarPad + 140.dp))
+            Spacer(modifier = Modifier.height(statusBarPad + 184.dp))
 
             if (pages.isNotEmpty()) {
                 HorizontalPager(
@@ -383,6 +413,13 @@ fun LauncherScreen(pinTrigger: Int = 0) {
                     val isCurrentPage = pagerState.currentPage == pageIndex
                     LaunchedEffect(isCurrentPage) {
                         if (isCurrentPage) gridState.scrollToItem(0)
+                    }
+                    LaunchedEffect(isCurrentPage, searchScrollTarget) {
+                        val target = searchScrollTarget
+                        if (isCurrentPage && target != null && target.first == pageIndex) {
+                            gridState.animateScrollToItem(target.second)
+                            searchScrollTarget = null
+                        }
                     }
                     Box(
                         modifier = Modifier
@@ -398,7 +435,7 @@ fun LauncherScreen(pinTrigger: Int = 0) {
                             state = gridState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
-                                start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp
+                                start = 10.dp, end = 10.dp, top = 13.dp, bottom = 8.dp
                             )
                         ) {
                             itemsIndexed(
@@ -546,6 +583,9 @@ fun LauncherScreen(pinTrigger: Int = 0) {
                 }
             },
             onTabDeleteRequest = { index -> deletePageTarget = index },
+            searchQuery = searchQuery,
+            onSearchQueryChange = { searchQuery = it },
+            onSearchSubmit = { onSearchSubmit() },
             modifier = Modifier.align(Alignment.TopCenter)
         )
 

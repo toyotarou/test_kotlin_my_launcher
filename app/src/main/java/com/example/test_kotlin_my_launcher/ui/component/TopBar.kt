@@ -69,6 +69,9 @@ fun TopBar(
     onPageAdd: () -> Unit,
     onPageDeleteRequest: () -> Unit,
     onTabDeleteRequest: (index: Int) -> Unit,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onSearchSubmit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -259,6 +262,55 @@ fun TopBar(
                         .border(1.5.dp, Color.White.copy(alpha = 0.6f), CircleShape)
                         .clickable { onColorPickerClick() }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(5.dp))
+
+            // ── 検索行
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(20.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                ) {
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = onSearchQueryChange,
+                        singleLine = true,
+                        textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+                        modifier = Modifier.fillMaxWidth(),
+                        decorationBox = { inner ->
+                            if (searchQuery.isEmpty()) {
+                                Text(
+                                    "アプリを検索...",
+                                    color = Color.White.copy(alpha = 0.40f),
+                                    fontSize = 13.sp
+                                )
+                            }
+                            inner()
+                        }
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+                        .clickable { onSearchSubmit() }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("検索", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
             }
 
             Spacer(modifier = Modifier.height(5.dp))
