@@ -34,8 +34,9 @@
 - 7-11 「ページ1へ戻す」バッジ
 - 7-12 画面縦固定
 - 7-13 ページ切り替え時の頭出し
+- 7-14 アプリ検索機能
 
-> 最終更新: 2026-03-30
+> 最終更新: 2026-03-31
 
 ---
 
@@ -240,7 +241,9 @@ test_kotlin_my_launcher/
 │       │       ├── dialog/
 │       │       │   ├── ResetDialog.kt
 │       │       │   ├── DeletePageDialog.kt
-│       │       │   └── ColorPickerDialog.kt
+│       │       │   ├── ColorPickerDialog.kt
+│       │       │   ├── SearchResultsDialog.kt
+│       │       │   └── SearchNotFoundDialog.kt
 │       │       └── screen/
 │       │           └── LauncherScreen.kt     ← 画面全体の状態管理
 │       │
@@ -872,6 +875,98 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 
 ---
 
+### 7-14. アプリ検索機能
+
+トップバーのアクション行とタブ行の間に検索バーを追加。アプリ名で全ページを横断検索できる。
+
+**UI 構造（`TopBar.kt`）**:
+
+```
+[ アクション行: リセット / タブを掴む / ◀ / ▶ / 完了 / 🎨 ]
+[ 検索バー（テキスト入力）              ] [ 検索ボタン ]
+[ タブ行 ]
+```
+
+- 検索バー: `BasicTextField` + プレースホルダー「アプリを検索...」
+- キーボードの `ImeAction.Search` または「検索」ボタンで送信
+
+**検索ロジック（`LauncherScreen.kt` の `onSearchSubmit()`）**:
+
+```kotlin
+fun onSearchSubmit() {
+    val query = searchQuery.trim()
+    searchQuery = ""
+    keyboardController?.hide()
+    if (query.isBlank()) return
+    val hits = mutableListOf<SearchResult>()
+    for ((pageIdx, page) in pages.withIndex()) {
+        page.apps.forEachIndexed { appIdx, app ->
+            if (app.label.contains(query, ignoreCase = true)) {
+                hits.add(SearchResult(pageIdx, page.name, appIdx, app))
+            }
+        }
+    }
+    if (hits.isEmpty()) {
+        searchLastQuery = query
+        showSearchNotFound = true
+    } else {
+        searchLastQuery = query
+        searchResults = hits
+        showSearchResults = true
+    }
+}
+```
+
+- 大文字/小文字を区別しない部分一致（`ignoreCase = true`）
+- 全ページを順番に走査し、ヒットしたアプリをすべて収集
+
+**結果ダイアログ 2 種類**:
+
+| ダイアログ | 条件 | 内容 |
+|---|---|---|
+| `SearchResultsDialog` | ヒットあり | アプリ名・ページ名・アイコンのリスト |
+| `SearchNotFoundDialog` | ヒットなし | 「見つかりません」メッセージ |
+
+**`SearchResult` データクラス（`SearchResultsDialog.kt`）**:
+
+```kotlin
+data class SearchResult(
+    val pageIndex: Int,   // 何番目のページにあるか
+    val pageName: String, // ページ名
+    val appIndex: Int,    // ページ内の何番目にあるか
+    val app: AppInfo      // アプリ情報
+)
+```
+
+**結果選択後の動作**:
+1. `pagerState.animateScrollToPage(result.pageIndex)` でページを切り替え
+2. `searchScrollTarget = Pair(result.pageIndex, result.appIndex)` にセット
+3. ページが表示された瞬間（`LaunchedEffect(isCurrentPage, searchScrollTarget)`）に  
+   `gridState.animateScrollToItem(target.second)` でアプリの位置までスクロール
+
+```kotlin
+LaunchedEffect(isCurrentPage, searchScrollTarget) {
+    val target = searchScrollTarget
+    if (isCurrentPage && target != null && target.first == pageIndex) {
+        gridState.animateScrollToItem(target.second)
+        searchScrollTarget = null
+    }
+}
+```
+
+**状態変数**:
+
+| 変数 | 型 | 用途 |
+|---|---|---|
+| `searchQuery` | `String` | 入力中のテキスト |
+| `searchLastQuery` | `String` | ダイアログ表示用（送信後に保持） |
+| `searchResults` | `List<SearchResult>` | 検索結果一覧 |
+| `showSearchResults` | `Boolean` | 結果ダイアログ表示フラグ |
+| `showSearchNotFound` | `Boolean` | 未検索ダイアログ表示フラグ |
+| `searchScrollTarget` | `Pair<Int, Int>?` | ページ遷移後のグリッドスクロール先 |
+
+---
+
 ## 8. データ設計
 
 ### PageData クラス
@@ -957,6 +1052,8 @@ Box（画面全体・ドラッグジェスチャー担当）
 │       ├─ Row（タイトル行）   ← 左: "あめらん - Amazing Launcher -" / 右: ↺ リロードボタン
 │       ├─ Spacer(5dp)
 │       ├─ Row（アクション行） ← リセット / タブを掴む / ◀ / ▶ / 完了 / 🎨
+│       ├─ Spacer(5dp)
+│       ├─ Row（検索行）       ← テキスト入力 + 「検索」ボタン
 │       ├─ Spacer(5dp)
 │       └─ Row（タブ行）
 │           ├─ LazyRow（タブ・weight(1f)・スクロール可）
@@ -1136,6 +1233,8 @@ Kotlin はファイルの先頭に `package` を書く。
 | `ui/dialog/ResetDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
 | `ui/dialog/DeletePageDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
 | `ui/dialog/ColorPickerDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
+| `ui/dialog/SearchResultsDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
+| `ui/dialog/SearchNotFoundDialog.kt` | `com.example.test_kotlin_my_launcher.ui.dialog` |
 | `ui/screen/LauncherScreen.kt` | `com.example.test_kotlin_my_launcher.ui.screen` |
 
 ### 12-3. 別ファイルのものを使う方法（import）
