@@ -68,6 +68,8 @@ import com.example.test_kotlin_my_launcher.ui.dialog.ColorPickerDialog
 import com.example.test_kotlin_my_launcher.ui.dialog.DeletePageDialog
 import com.example.test_kotlin_my_launcher.ui.dialog.ResetDialog
 import com.example.test_kotlin_my_launcher.ui.dialog.SearchNotFoundDialog
+import com.example.test_kotlin_my_launcher.ui.dialog.SearchResult
+import com.example.test_kotlin_my_launcher.ui.dialog.SearchResultsDialog
 import com.example.test_kotlin_my_launcher.ui.theme.themeGradient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -207,6 +209,8 @@ fun LauncherScreen(pinTrigger: Int = 0) {
     var searchQuery by remember { mutableStateOf("") }
     var showSearchNotFound by remember { mutableStateOf(false) }
     var searchLastQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
+    var showSearchResults by remember { mutableStateOf(false) }
     // (pageIndex, itemIndex) — ページ遷移後にグリッドスクロールするターゲット
     var searchScrollTarget by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
@@ -234,16 +238,22 @@ fun LauncherScreen(pinTrigger: Int = 0) {
         searchQuery = ""
         keyboardController?.hide()
         if (query.isBlank()) return
+        val hits = mutableListOf<SearchResult>()
         for ((pageIdx, page) in pages.withIndex()) {
-            val appIdx = page.apps.indexOfFirst { it.label.contains(query, ignoreCase = true) }
-            if (appIdx >= 0) {
-                coroutineScope.launch { pagerState.animateScrollToPage(pageIdx) }
-                searchScrollTarget = Pair(pageIdx, appIdx)
-                return
+            page.apps.forEachIndexed { appIdx, app ->
+                if (app.label.contains(query, ignoreCase = true)) {
+                    hits.add(SearchResult(pageIdx, page.name, appIdx, app))
+                }
             }
         }
-        searchLastQuery = query
-        showSearchNotFound = true
+        if (hits.isEmpty()) {
+            searchLastQuery = query
+            showSearchNotFound = true
+        } else {
+            searchLastQuery = query
+            searchResults = hits
+            showSearchResults = true
+        }
     }
 
     BackHandler(enabled = isEditMode || editingPageName) {
@@ -293,6 +303,19 @@ fun LauncherScreen(pinTrigger: Int = 0) {
         SearchNotFoundDialog(
             query = searchLastQuery,
             onDismiss = { showSearchNotFound = false }
+        )
+    }
+
+    if (showSearchResults) {
+        SearchResultsDialog(
+            query = searchLastQuery,
+            results = searchResults,
+            onSelect = { result ->
+                showSearchResults = false
+                coroutineScope.launch { pagerState.animateScrollToPage(result.pageIndex) }
+                searchScrollTarget = Pair(result.pageIndex, result.appIndex)
+            },
+            onDismiss = { showSearchResults = false }
         )
     }
 

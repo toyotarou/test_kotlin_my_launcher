@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,10 +39,7 @@ fun SearchNotFoundDialog(query: String, onDismiss: () -> Unit) {
                 color = Color.White.copy(alpha = 0.75f),
                 fontSize = 13.sp
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            TextButton(onClick = onDismiss) {
-                Text("閉じる", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
+            Spacer(modifier = Modifier.height(20.dp))
         }
     }
 }
